@@ -1,0 +1,49 @@
+package testutil
+
+import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
+)
+
+// TestKeyPair holds a test RSA key pair.
+type TestKeyPair struct {
+	PrivateKey    *rsa.PrivateKey
+	PrivatePEM    []byte
+	PrivateBase64 string
+	KeyID         string
+}
+
+// GenerateTestKeyPair generates an RSA key pair for testing.
+func GenerateTestKeyPair(keyID string) (*TestKeyPair, error) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, err
+	}
+
+	// Encode to PEM
+	privateKeyBytes := x509.MarshalPKCS1PrivateKey(privateKey)
+	privatePEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: privateKeyBytes,
+	})
+
+	// Encode to Base64
+	privateBase64 := base64.StdEncoding.EncodeToString(privatePEM)
+
+	return &TestKeyPair{
+		PrivateKey:    privateKey,
+		PrivatePEM:    privatePEM,
+		PrivateBase64: privateBase64,
+		KeyID:         keyID,
+	}, nil
+}
+
+// DefaultTestKeyID is the default key ID used in tests.
+const DefaultTestKeyID = "test-key-id-001"
+
+// StaticTestKeyBase64 is a pre-generated test key for consistent test results.
+// This is the same key from .env.example decoded.
+const StaticTestKeyBase64 = `LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2UUlCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktjd2dnU2pBZ0VBQW9JQkFRRFJzMmtKd1NkQlNwVDgKTlp4Qm5tdzBqbUV1a3lWSEdYQS8xNFRTa3dKeE04eDg4TGZNQm5Xakh2RDlpMzdXQUdYZXlvWjlHWm5nVzRCawpNa3Fsb1RyNUpUSUk1UHRXNVhvYjJWcE5ldUFGRExHZCtFcWtRUDd2TjdxcmlPZ0h3TEgrV1JzYzNHNDQrYzArCktFSzAxaE5hSFhJa1RuTkpYRE5oVCtiZ2tva0NNZEd2eDgzbVNPVWJzS1dOQU54a0ZnblBmVExpV2lVK1dqZ1MKdEk1MFNYV1piZFgyL1BYT2NjYTF5Q2RNN3hGdFYzRWU3allqVUlVejNkQ3dSQ2VWYk5FTm4zNnNsU2tsL3lKMQpNNFU1TnRHVXg5ZDhUR3ZiWU4rOFMvY2U2QmFpNG5PY1FqYkxxaUtYKzlJckt3R0hzNGZoRjk2MFZ5ZGRtcnphCnBjeTlqYXk5QWdNQkFBRUNnZ0VBRVE1aExFQndJM0RnQmxXTDlKQmdwN091OXQxVUNtRG96dUNHTnFScmJlNnoKSXJSbmxxb3Qxa3MxZWNIbldwdWtyWWJXZ29WYkRUTVVFZEkvWFJKc25BZ285aTA5dmpjakEvSGRWUEQ2R0o4TQpNVmVaSnB2OHdGTk5sUmNwSER4Um5lajhlZy81elJ1UVZJNXN3bzJvL0VycDFrY2xQR0hKOGcvUUxSTHVIdVh0CnN6blV5QnlyNXJSTjNuWmx3eG9xY3VMdUtQeXVYMU12QVJqbURWYWl6WFhEZVJ2Z3U1c2VnVGc5VUVTeFl1TFAKYjBGTmRkMmVVczZmYk54UXl4Q29VZUlkaXpDQThLZ2pxNittemJ3K205Q0JpYys3T2VOSUNUZ3NYamp2cFZBTwppdExma1ZoY2kvamdtdnhITUlVeE5XVWxvNHcyY25OaXJ6SytxYVZPOFFLQmdRRDB5MWcxVlA3a0gzbG4walpSCjdyN0hxbVQrTC9CdEV2Tng4SHI3bzZ1S2xyNm1VNjg5NjUvVzNjTTBzL1NXZG5RalptMWYwSWNSTjFpd0J2ZUUKNXlnOXBBMHZsVVhYRGVlMzZYWi9SS3lNeFE2b0JwOGovKzRjclZsMW9jMWY4TStWc2FFMXJqZWJPVFVyQk84aQpteitIZmZ3Vm04NTc4T1FQb20rem1oL2ptUUtCZ1FEYlRORmdJK25JdXJMNXNFOE9kTjB5OTJGTVpzZkl2UENwCjFVcnRjNkZrb1dmTW83SG9PWGNYWUdacDhNcnpuKzJqUUVLUDBGaUpONTQxc29JNWZKQlhjMWtLd3BjdlJKVlMKeUJkSnB4S1l3ZGFuOXVhTW44Q1JJc1dTNFFHL0tQL0luM2tac1krN3hpZVFqMWZpb1p4dGthYjJPdi9TT0srYwpRelpxdzFUSXhRS0JnQTlXTmg2UlJxN3dNZUVKVUpIdGpWSmhJSmEwVmpIZlFCVmhaYk1pVy9zQTJzejg3VHZKCjZXZkMyUm9TTkQ3QkNTRzJweCticHZxekp3RlFUbTJyTmVBMnlRUzBLMzMveHdiRXY4SFZnYUlJTHBUa1pWQVMKRnM4QkpWdXpXWFNyVjdZZlBPUnFGOTNIeGNiK05pVks2TDRLYktMRjhqZmRyY3cwOXg2ZmgyUHhBb0dBVy81cApobzhLTHk1Q2pnT3I1a0NYMmgxMEwzeWVLbE00RWNacjNCZzVoK0U5amRiTmRzRkVlQVgwY0ZTV2pvUjBSNXRaClVNTHhvUDQzM0FhNklpdGkwWXlOdWJuUGVnQ25NMGJFbmh6NzdDREVUMGwvaFZZdWpiT3NkZVQxdXA4VVRiQzQKT0ZNSUhKa1BWOUVKNlFRcWZyd3U4ZlBtQzFZODhMZFJBVHR4bHZFQ2dZRUF6TjRNVmRtVXNlNUp0ckI0YWYvbgpMVjFqOE4rY3RSWjJPamFmMkZxbmdZeVIyVFE0WFplV0NXMnZzUndvUnVNSmZwWjExSS85TEV1K0R3dVRaTWRPCm1VcUs2YXRaVkw3OG5GODR5em9aczdrbmFTN21SSWZWSEw5U1J0MENzajZxUjBqVWF4bkNuUzJ2ZVZKUWxWWE0KRHhDSHFldVkvU2c5UnFhWWFrNFlHUjQ9Ci0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0K`

@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OIDC Broker - Callback Result</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        border: "hsl(var(--border))",
+                        input: "hsl(var(--input))",
+                        ring: "hsl(var(--ring))",
+                        background: "hsl(var(--background))",
+                        foreground: "hsl(var(--foreground))",
+                        primary: {
+                            DEFAULT: "hsl(var(--primary))",
+                            foreground: "hsl(var(--primary-foreground))",
+                        },
+                        secondary: {
+                            DEFAULT: "hsl(var(--secondary))",
+                            foreground: "hsl(var(--secondary-foreground))",
+                        },
+                        destructive: {
+                            DEFAULT: "hsl(var(--destructive))",
+                            foreground: "hsl(var(--destructive-foreground))",
+                        },
+                        muted: {
+                            DEFAULT: "hsl(var(--muted))",
+                            foreground: "hsl(var(--muted-foreground))",
+                        },
+                        accent: {
+                            DEFAULT: "hsl(var(--accent))",
+                            foreground: "hsl(var(--accent-foreground))",
+                        },
+                        popover: {
+                            DEFAULT: "hsl(var(--popover))",
+                            foreground: "hsl(var(--popover-foreground))",
+                        },
+                        card: {
+                            DEFAULT: "hsl(var(--card))",
+                            foreground: "hsl(var(--card-foreground))",
+                        },
+                    },
+                    borderRadius: {
+                        lg: "var(--radius)",
+                        md: "calc(var(--radius) - 2px)",
+                        sm: "calc(var(--radius) - 4px)",
+                    },
+                },
+            },
+        }
+    </script>
+    <style>
+        @layer base {
+            :root {
+                --background: 240 10% 3.9%;
+                --foreground: 0 0% 98%;
+                --card: 240 10% 3.9%;
+                --card-foreground: 0 0% 98%;
+                --popover: 240 10% 3.9%;
+                --popover-foreground: 0 0% 98%;
+                --primary: 0 0% 98%;
+                --primary-foreground: 240 5.9% 10%;
+                --secondary: 240 3.7% 15.9%;
+                --secondary-foreground: 0 0% 98%;
+                --muted: 240 3.7% 15.9%;
+                --muted-foreground: 240 5% 64.9%;
+                --accent: 240 3.7% 15.9%;
+                --accent-foreground: 0 0% 98%;
+                --destructive: 0 62.8% 30.6%;
+                --destructive-foreground: 0 0% 98%;
+                --border: 240 3.7% 15.9%;
+                --input: 240 3.7% 15.9%;
+                --ring: 240 4.9% 83.9%;
+                --radius: 0.5rem;
+            }
+        }
+    </style>
+</head>
+<body class="bg-background text-foreground min-h-screen flex flex-col items-center py-12 px-4 sm:px-6 lg:px-8 font-sans antialiased">
+    <div class="w-full max-w-[560px] space-y-6">
+
+{{if .Error}}
+        <!-- Error State -->
+        <div class="rounded-xl border border-destructive/50 bg-card text-card-foreground shadow-sm">
+            <div class="p-6 space-y-6">
+                <div class="flex flex-col items-center space-y-2 text-center">
+                    <div class="flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+                        <i data-lucide="x-circle" class="h-6 w-6"></i>
+                    </div>
+                    <h1 class="text-xl font-semibold tracking-tight">Authentication Failed</h1>
+                    <p class="text-sm text-muted-foreground">An error occurred during the flow</p>
+                </div>
+
+                <div class="rounded-lg border border-destructive/20 bg-destructive/10 p-4">
+                    <div class="flex items-start gap-3">
+                        <i data-lucide="alert-circle" class="mt-0.5 h-4 w-4 text-destructive shrink-0"></i>
+                        <div class="space-y-1">
+                            <h3 class="text-sm font-medium text-destructive">{{.Error}}</h3>
+{{if .ErrorDescription}}
+                            <p class="text-xs text-destructive/90">{{.ErrorDescription}}</p>
+{{end}}
+                        </div>
+                    </div>
+                </div>
+
+                <div class="pt-2">
+                    <a href="/debug/login" class="group flex w-full items-center justify-center gap-2 rounded-md bg-secondary px-4 py-2.5 text-sm font-medium text-secondary-foreground transition-all hover:bg-secondary/80">
+                        <i data-lucide="arrow-left" class="h-4 w-4 transition-transform group-hover:-translate-x-1"></i>
+                        Try Again
+                    </a>
+                </div>
+            </div>
+        </div>
+
+{{else if .Code}}
+        <!-- Success State -->
+        <div class="rounded-xl border border-border bg-card text-card-foreground shadow-sm">
+            <div class="p-6 space-y-6">
+                <div class="flex flex-col items-center space-y-2 text-center">
+                    <div class="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-500">
+                        <i data-lucide="check-circle-2" class="h-6 w-6"></i>
+                    </div>
+                    <h1 class="text-xl font-semibold tracking-tight">Authentication Successful</h1>
+                    <p class="text-sm text-muted-foreground">Tokens have been issued</p>
+                </div>
+
+    {{if .TokenError}}
+                <div class="rounded-lg border border-yellow-500/20 bg-yellow-500/10 p-4">
+                    <div class="flex items-start gap-3">
+                        <i data-lucide="alert-triangle" class="mt-0.5 h-4 w-4 text-yellow-500 shrink-0"></i>
+                        <div class="space-y-1">
+                            <h3 class="text-sm font-medium text-yellow-500">Token Exchange Error</h3>
+                            <p class="text-xs text-yellow-500/90">{{.TokenError}}</p>
+                        </div>
+                    </div>
+                </div>
+    {{end}}
+
+    {{if .DecodedClaims}}
+                <div class="space-y-3">
+                    <div class="flex items-center justify-between">
+                        <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">ID Token Claims</h2>
+                    </div>
+                    <div class="relative rounded-lg border border-border bg-muted/30 p-4">
+                        <button onclick="copyToClipboard(this, 'claims-json')" class="absolute right-3 top-3 rounded-md border border-border bg-background p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors">
+                            <i data-lucide="copy" class="h-3.5 w-3.5"></i>
+                        </button>
+                        <pre id="claims-json" class="overflow-x-auto text-xs font-mono leading-relaxed text-foreground/90 whitespace-pre-wrap break-all">{{.DecodedClaims}}</pre>
+                    </div>
+                </div>
+    {{end}}
+
+    {{if .UserInfo}}
+                <div class="space-y-3">
+                    <div class="flex items-center justify-between">
+                        <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">UserInfo Response</h2>
+                    </div>
+                    <div class="relative rounded-lg border border-border bg-muted/30 p-4">
+                        <button onclick="copyToClipboard(this, 'userinfo-json')" class="absolute right-3 top-3 rounded-md border border-border bg-background p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors">
+                            <i data-lucide="copy" class="h-3.5 w-3.5"></i>
+                        </button>
+                        <pre id="userinfo-json" class="overflow-x-auto text-xs font-mono leading-relaxed text-foreground/90 whitespace-pre-wrap break-all">{{.UserInfo}}</pre>
+                    </div>
+                </div>
+    {{else if .UserInfoError}}
+                <div class="rounded-lg border border-yellow-500/20 bg-yellow-500/10 p-4">
+                    <div class="flex items-start gap-3">
+                        <i data-lucide="alert-triangle" class="mt-0.5 h-4 w-4 text-yellow-500 shrink-0"></i>
+                        <div class="space-y-1">
+                            <h3 class="text-sm font-medium text-yellow-500">UserInfo Error</h3>
+                            <p class="text-xs text-yellow-500/90">{{.UserInfoError}}</p>
+                        </div>
+                    </div>
+                </div>
+    {{end}}
+
+    {{if or .IDToken .AccessToken}}
+                <div class="space-y-3">
+                    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Raw Tokens</h2>
+                    
+                    <div class="space-y-4">
+                        <div class="flex space-x-1 rounded-lg bg-muted p-1">
+                {{if .IDToken}}
+                            <button onclick="showTab('id-token')" class="tab-btn w-full rounded-md py-1.5 text-xs font-medium text-muted-foreground ring-offset-background transition-all hover:bg-background/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm active" data-state="active" data-tab="id-token">
+                                ID Token
+                            </button>
+                {{end}}
+                {{if .AccessToken}}
+                            <button onclick="showTab('access-token')" class="tab-btn w-full rounded-md py-1.5 text-xs font-medium text-muted-foreground ring-offset-background transition-all hover:bg-background/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm {{if not .IDToken}}active{{end}}" data-state="{{if not .IDToken}}active{{else}}inactive{{end}}" data-tab="access-token">
+                                Access Token
+                            </button>
+                {{end}}
+                        </div>
+
+                {{if .IDToken}}
+                        <div id="id-token-tab" class="tab-content block">
+                            <div class="relative rounded-lg border border-border bg-muted/30 p-4">
+                                <button onclick="copyToClipboard(this, 'id-token-value')" class="absolute right-3 top-3 rounded-md border border-border bg-background p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors">
+                                    <i data-lucide="copy" class="h-3.5 w-3.5"></i>
+                                </button>
+                                <code id="id-token-value" class="block overflow-x-auto text-xs font-mono leading-relaxed text-muted-foreground whitespace-pre-wrap break-all pr-8">{{.IDToken}}</code>
+                            </div>
+                        </div>
+                {{end}}
+
+                {{if .AccessToken}}
+                        <div id="access-token-tab" class="tab-content {{if .IDToken}}hidden{{else}}block{{end}}">
+                            <div class="relative rounded-lg border border-border bg-muted/30 p-4">
+                                <button onclick="copyToClipboard(this, 'access-token-value')" class="absolute right-3 top-3 rounded-md border border-border bg-background p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors">
+                                    <i data-lucide="copy" class="h-3.5 w-3.5"></i>
+                                </button>
+                                <code id="access-token-value" class="block overflow-x-auto text-xs font-mono leading-relaxed text-muted-foreground whitespace-pre-wrap break-all pr-8">{{.AccessToken}}</code>
+                            </div>
+                        </div>
+                {{end}}
+                    </div>
+                </div>
+    {{end}}
+
+                <div class="pt-4 border-t border-border">
+                    <a href="/debug/login" class="group flex w-full items-center justify-center gap-2 rounded-md bg-secondary px-4 py-2.5 text-sm font-medium text-secondary-foreground transition-all hover:bg-secondary/80">
+                        <i data-lucide="arrow-left" class="h-4 w-4 transition-transform group-hover:-translate-x-1"></i>
+                        Back to Login
+                    </a>
+                </div>
+            </div>
+        </div>
+
+{{else}}
+        <!-- Empty Response State -->
+        <div class="rounded-xl border border-border bg-card text-card-foreground shadow-sm">
+            <div class="p-6 space-y-6">
+                <div class="flex flex-col items-center space-y-2 text-center">
+                    <div class="flex h-12 w-12 items-center justify-center rounded-full bg-yellow-500/10 text-yellow-500">
+                        <i data-lucide="help-circle" class="h-6 w-6"></i>
+                    </div>
+                    <h1 class="text-xl font-semibold tracking-tight">No Response</h1>
+                    <p class="text-sm text-muted-foreground">No authorization code or error was returned</p>
+                </div>
+
+                <div class="pt-2">
+                    <a href="/debug/login" class="group flex w-full items-center justify-center gap-2 rounded-md bg-secondary px-4 py-2.5 text-sm font-medium text-secondary-foreground transition-all hover:bg-secondary/80">
+                        <i data-lucide="arrow-left" class="h-4 w-4 transition-transform group-hover:-translate-x-1"></i>
+                        Back to Login
+                    </a>
+                </div>
+            </div>
+        </div>
+{{end}}
+    </div>
+
+    <script>
+        lucide.createIcons();
+
+        function showTab(tabId) {
+            // Update buttons
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                if (btn.dataset.tab === tabId) {
+                    btn.dataset.state = 'active';
+                    btn.classList.add('bg-background', 'text-foreground', 'shadow-sm');
+                    btn.classList.remove('text-muted-foreground', 'hover:bg-background/50');
+                } else {
+                    btn.dataset.state = 'inactive';
+                    btn.classList.remove('bg-background', 'text-foreground', 'shadow-sm');
+                    btn.classList.add('text-muted-foreground', 'hover:bg-background/50');
+                }
+            });
+
+            // Update content
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.add('hidden');
+            });
+            document.getElementById(tabId + '-tab').classList.remove('hidden');
+        }
+
+        function copyToClipboard(btn, elementId) {
+            const text = document.getElementById(elementId).textContent;
+            navigator.clipboard.writeText(text).then(() => {
+                const icon = btn.querySelector('i');
+                const originalIcon = icon.getAttribute('data-lucide');
+                
+                // Change to checkmark
+                icon.setAttribute('data-lucide', 'check');
+                lucide.createIcons();
+                btn.classList.add('text-emerald-500');
+                
+                setTimeout(() => {
+                    icon.setAttribute('data-lucide', 'copy');
+                    lucide.createIcons();
+                    btn.classList.remove('text-emerald-500');
+                }, 1500);
+            });
+        }
+    </script>
+</body>
+</html>

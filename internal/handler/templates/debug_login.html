@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OIDC Broker - Debug Login</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        border: "hsl(var(--border))",
+                        input: "hsl(var(--input))",
+                        ring: "hsl(var(--ring))",
+                        background: "hsl(var(--background))",
+                        foreground: "hsl(var(--foreground))",
+                        primary: {
+                            DEFAULT: "hsl(var(--primary))",
+                            foreground: "hsl(var(--primary-foreground))",
+                        },
+                        secondary: {
+                            DEFAULT: "hsl(var(--secondary))",
+                            foreground: "hsl(var(--secondary-foreground))",
+                        },
+                        destructive: {
+                            DEFAULT: "hsl(var(--destructive))",
+                            foreground: "hsl(var(--destructive-foreground))",
+                        },
+                        muted: {
+                            DEFAULT: "hsl(var(--muted))",
+                            foreground: "hsl(var(--muted-foreground))",
+                        },
+                        accent: {
+                            DEFAULT: "hsl(var(--accent))",
+                            foreground: "hsl(var(--accent-foreground))",
+                        },
+                        popover: {
+                            DEFAULT: "hsl(var(--popover))",
+                            foreground: "hsl(var(--popover-foreground))",
+                        },
+                        card: {
+                            DEFAULT: "hsl(var(--card))",
+                            foreground: "hsl(var(--card-foreground))",
+                        },
+                    },
+                    borderRadius: {
+                        lg: "var(--radius)",
+                        md: "calc(var(--radius) - 2px)",
+                        sm: "calc(var(--radius) - 4px)",
+                    },
+                },
+            },
+        }
+    </script>
+    <style>
+        @layer base {
+            :root {
+                --background: 240 10% 3.9%;
+                --foreground: 0 0% 98%;
+                --card: 240 10% 3.9%;
+                --card-foreground: 0 0% 98%;
+                --popover: 240 10% 3.9%;
+                --popover-foreground: 0 0% 98%;
+                --primary: 0 0% 98%;
+                --primary-foreground: 240 5.9% 10%;
+                --secondary: 240 3.7% 15.9%;
+                --secondary-foreground: 0 0% 98%;
+                --muted: 240 3.7% 15.9%;
+                --muted-foreground: 240 5% 64.9%;
+                --accent: 240 3.7% 15.9%;
+                --accent-foreground: 0 0% 98%;
+                --destructive: 0 62.8% 30.6%;
+                --destructive-foreground: 0 0% 98%;
+                --border: 240 3.7% 15.9%;
+                --input: 240 3.7% 15.9%;
+                --ring: 240 4.9% 83.9%;
+                --radius: 0.5rem;
+            }
+        }
+    </style>
+</head>
+<body class="bg-background text-foreground min-h-screen flex flex-col items-center py-12 px-4 sm:px-6 lg:px-8 font-sans antialiased">
+    <div class="w-full max-w-[560px] space-y-6">
+        
+        <!-- Header -->
+        <div class="flex flex-col items-center space-y-2 text-center">
+            <div class="flex h-12 w-12 items-center justify-center rounded-xl border border-border bg-card shadow-sm">
+                <i data-lucide="shield-check" class="h-6 w-6"></i>
+            </div>
+            <h1 class="text-2xl font-semibold tracking-tight">OIDC Broker</h1>
+            <p class="text-sm text-muted-foreground">Debug Console</p>
+        </div>
+
+        <!-- Main Card -->
+        <div class="rounded-xl border border-border bg-card text-card-foreground shadow-sm">
+            <div class="p-6 space-y-6">
+                
+                <!-- Info Banner -->
+                <div class="rounded-lg border border-border bg-secondary/50 p-4">
+                    <div class="flex items-start gap-3">
+                        <i data-lucide="info" class="mt-0.5 h-4 w-4 text-muted-foreground shrink-0"></i>
+                        <div class="space-y-1 text-xs text-muted-foreground leading-relaxed">
+                            <p><strong class="text-foreground">Root Issuer:</strong> Uses <code class="bg-secondary px-1 py-0.5 rounded text-foreground font-mono">/authorize</code> with the first configured provider</p>
+                            <p><strong class="text-foreground">Provider-Scoped:</strong> Uses <code class="bg-secondary px-1 py-0.5 rounded text-foreground font-mono">/providers/{name}/authorize</code></p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Root Issuer Section -->
+                <div class="space-y-3">
+                    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Root Issuer</h2>
+                    <a href="{{.BaseURL}}/authorize?client_id=test-client&redirect_uri={{urlquery .CallbackURL}}&response_type=code&state=test-state-root&nonce=test-nonce&scope=openid" 
+                       class="group flex flex-col items-center justify-center rounded-md bg-primary px-4 py-3 text-sm font-medium text-primary-foreground shadow transition-all hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+                        <span>Login</span>
+                        <span class="mt-1 font-mono text-xs opacity-70">/authorize</span>
+                    </a>
+                </div>
+
+{{if .Providers}}
+                <div class="relative">
+                    <div class="absolute inset-0 flex items-center">
+                        <span class="w-full border-t border-border"></span>
+                    </div>
+                </div>
+
+                <!-- Provider Scoped Section -->
+                <div class="space-y-3">
+                    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Provider-Scoped Issuers</h2>
+                    <div class="grid gap-3">
+{{range .Providers}}
+                        <a href="{{$.BaseURL}}/providers/{{.}}/authorize?client_id=test-client&redirect_uri={{urlquery $.CallbackURL}}&response_type=code&state=test-state-{{.}}&nonce=test-nonce&scope=openid"
+                           class="group flex flex-col items-center justify-center rounded-md border border-input bg-background px-4 py-3 text-sm font-medium shadow-sm transition-all hover:bg-accent hover:text-accent-foreground">
+                            <span class="flex items-center gap-2">
+                                <span>{{. | title}}</span>
+                            </span>
+                            <span class="mt-1 font-mono text-xs text-muted-foreground group-hover:text-accent-foreground">/providers/{{.}}/authorize</span>
+                        </a>
+{{end}}
+                    </div>
+                </div>
+{{end}}
+
+{{if .CognitoEnabled}}
+                <div class="relative">
+                    <div class="absolute inset-0 flex items-center">
+                        <span class="w-full border-t border-border"></span>
+                    </div>
+                </div>
+
+                <!-- Cognito Section -->
+                <div class="space-y-3">
+                    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Cognito Integration</h2>
+                    <a href="{{.CognitoAuthURL}}"
+                       class="group flex flex-col items-center justify-center rounded-md border border-input bg-background px-4 py-3 text-sm font-medium shadow-sm transition-all hover:bg-accent hover:text-accent-foreground">
+                        <span>Cognito</span>
+                        <span class="mt-1 font-mono text-xs text-muted-foreground group-hover:text-accent-foreground">External IdP</span>
+                    </a>
+                </div>
+{{end}}
+
+            </div>
+        </div>
+
+        <!-- Discovery Endpoints Card -->
+        <div class="rounded-xl border border-border bg-card text-card-foreground shadow-sm">
+            <div class="p-6 space-y-6">
+                <div class="flex items-center gap-2">
+                    <i data-lucide="globe" class="h-4 w-4 text-muted-foreground"></i>
+                    <h2 class="text-sm font-semibold">Discovery Endpoints</h2>
+                </div>
+
+                <div class="space-y-3">
+                    <h3 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Root</h3>
+                    <div class="grid gap-3">
+                        <a href="/.well-known/openid-configuration" 
+                           class="group flex flex-col items-center justify-center rounded-md border border-input bg-background px-4 py-3 text-sm font-medium shadow-sm transition-all hover:bg-accent hover:text-accent-foreground text-center">
+                            <span>OpenID Configuration</span>
+                            <span class="mt-1 font-mono text-xs text-muted-foreground group-hover:text-accent-foreground break-all">/.well-known/openid-configuration</span>
+                        </a>
+                        <a href="/.well-known/jwks.json"
+                           class="group flex flex-col items-center justify-center rounded-md border border-input bg-background px-4 py-3 text-sm font-medium shadow-sm transition-all hover:bg-accent hover:text-accent-foreground text-center">
+                            <span>JSON Web Key Set</span>
+                            <span class="mt-1 font-mono text-xs text-muted-foreground group-hover:text-accent-foreground break-all">/.well-known/jwks.json</span>
+                        </a>
+                    </div>
+                </div>
+
+{{if .Providers}}
+                <div class="space-y-3">
+                    <h3 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Provider-Scoped</h3>
+                    <div class="grid gap-3">
+{{range .Providers}}
+                        <a href="/providers/{{.}}/.well-known/openid-configuration"
+                           class="group flex flex-col items-center justify-center rounded-md border border-input bg-background px-4 py-3 text-sm font-medium shadow-sm transition-all hover:bg-accent hover:text-accent-foreground text-center">
+                            <span>{{. | title}}</span>
+                            <span class="mt-1 font-mono text-xs text-muted-foreground group-hover:text-accent-foreground break-all">/providers/{{.}}/.well-known/openid-configuration</span>
+                        </a>
+{{end}}
+                    </div>
+                </div>
+{{end}}
+            </div>
+        </div>
+    </div>
+
+    <script>
+        lucide.createIcons();
+    </script>
+</body>
+</html>
