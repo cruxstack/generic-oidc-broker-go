@@ -87,8 +87,8 @@ func (h *Handlers) ProviderDiscovery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	issuer := h.cfg.ProviderIssuer(providerName)
-	// JWKS is shared across all issuers, so use the base issuer
-	doc := buildDiscoveryDocument(issuer, h.cfg.OIDCIssuer)
+	// Use provider-scoped JWKS URI for consistency
+	doc := buildDiscoveryDocument(issuer, "")
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(doc); err != nil {

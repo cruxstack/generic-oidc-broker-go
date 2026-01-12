@@ -37,8 +37,8 @@ func TestProviderScopedDiscoveryEndpoint(t *testing.T) {
 	assert.Equal(t, expectedIssuer+"/token", doc["token_endpoint"])
 	assert.Equal(t, expectedIssuer+"/userinfo", doc["userinfo_endpoint"])
 
-	// JWKS is shared across all providers (same key)
-	assert.Equal(t, ts.URL+"/.well-known/jwks.json", doc["jwks_uri"])
+	// JWKS URI is provider-scoped (same key, but provider-specific path)
+	assert.Equal(t, expectedIssuer+"/.well-known/jwks.json", doc["jwks_uri"])
 }
 
 // TestProviderScopedDiscoveryEndpointNotFound tests the discovery endpoint for an unknown provider.

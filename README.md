@@ -150,6 +150,7 @@ Configure OIDC clients via `APP_OIDC_CLIENTS`:
 | Endpoint                                                     | Description                 |
 |--------------------------------------------------------------|-----------------------------|
 | `GET /providers/{provider}/.well-known/openid-configuration` | Provider-specific discovery |
+| `GET /providers/{provider}/.well-known/jwks.json`            | Provider-specific JWKS      |
 | `GET /providers/{provider}/authorize`                        | Provider-specific authorize |
 | `POST /providers/{provider}/token`                           | Provider-specific token     |
 | `GET /providers/{provider}/userinfo`                         | Provider-specific userinfo  |

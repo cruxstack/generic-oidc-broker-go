@@ -220,6 +220,7 @@ func NewTestServer(cfg *TestServerConfig) (*TestServer, error) {
 	// Provider-scoped OIDC endpoints
 	// Each provider has its own issuer: {base_issuer}/providers/{provider_name}
 	r.Get("/providers/{provider}/.well-known/openid-configuration", handlers.ProviderDiscovery)
+	r.Get("/providers/{provider}/.well-known/jwks.json", handlers.ProviderJWKS)
 	r.Get("/providers/{provider}/authorize", handlers.ProviderAuthorize)
 	r.Post("/providers/{provider}/token", handlers.ProviderToken)
 	r.Get("/providers/{provider}/userinfo", handlers.ProviderUserinfo)
