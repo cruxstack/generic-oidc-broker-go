@@ -26,6 +26,7 @@ type RedisConfig struct {
 	Port   int
 	Proto  string // "redis" or "rediss" (TLS)
 	Pass   string
+	DB     int
 	Prefix string
 }
 
@@ -36,7 +37,7 @@ func NewRedisAuthCodeStore(cfg *RedisConfig) (*RedisAuthCodeStore, error) {
 	opts := &redis.Options{
 		Addr:     addr,
 		Password: cfg.Pass,
-		DB:       1, // Use DB 1 for auth codes (same as Node.js implementation)
+		DB:       cfg.DB,
 	}
 
 	// Enable TLS for rediss:// protocol

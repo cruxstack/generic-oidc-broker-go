@@ -77,6 +77,7 @@ type Config struct {
 	RedisPort    int
 	RedisProto   string
 	RedisPass    string
+	RedisDB      int
 
 	// Debug
 	DebugEnabled             bool
@@ -195,6 +196,7 @@ func LoadFromPath(path string) (*Config, error) {
 		RedisPort:    k.Int("redis.port"),
 		RedisProto:   k.String("redis.proto"),
 		RedisPass:    k.String("redis.pass"),
+		RedisDB:      k.Int("redis.db"),
 
 		// Debug
 		DebugEnabled:             k.String("debug.enabled") == "1",

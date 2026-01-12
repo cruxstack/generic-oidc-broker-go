@@ -92,6 +92,7 @@ func run(logger *slog.Logger) error {
 			Port:   cfg.RedisPort,
 			Proto:  cfg.RedisProto,
 			Pass:   cfg.RedisPass,
+			DB:     cfg.RedisDB,
 			Prefix: cfg.AuthCodeRedisStorePrefix,
 		})
 		if err != nil {

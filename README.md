@@ -76,6 +76,7 @@ Deploy as a standalone service and configure with environment variables.
 | `APP_REDIS_PORT`                    | Redis port                     | `6379`      |
 | `APP_REDIS_PROTO`                   | Protocol (`redis` or `rediss`) | `rediss`    |
 | `APP_REDIS_PASS`                    | Redis password                 | -           |
+| `APP_REDIS_DB`                      | Redis database number          | `0`         |
 | `APP_AUTH_CODE_REDIS_STORE_ENABLED` | Use Redis for auth codes       | `0`         |
 | `APP_SESSION_REDIS_STORE_ENABLED`   | Use Redis for sessions         | `0`         |
 
