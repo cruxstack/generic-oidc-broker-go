@@ -1,0 +1,44 @@
+# Build stage
+FROM golang:1.24-alpine AS build
+
+WORKDIR /app
+
+# Install build dependencies
+RUN apk add --no-cache git ca-certificates
+
+# Copy go mod files first for caching
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the mock-provider binary
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /mock-provider ./cmd/mock-provider
+
+# Runtime stage
+FROM alpine:3.19
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apk add --no-cache ca-certificates tzdata
+
+# Create non-root user
+RUN adduser -D -g '' appuser
+
+# Copy binary from build stage
+COPY --from=build /mock-provider /app/mock-provider
+
+# Switch to non-root user
+USER appuser
+
+# Expose port
+EXPOSE 9999
+
+# Health check
+HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:9999/health || exit 1
+
+# Run the binary
+ENTRYPOINT ["/app/mock-provider"]

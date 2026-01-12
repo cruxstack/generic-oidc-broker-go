@@ -1,0 +1,81 @@
+services:
+  # Init container that generates RSA keys at startup
+  init:
+    image: alpine:3.19
+    command: |
+      sh -c '
+        if [ ! -f /keys/private.pem ]; then
+          echo "Generating RSA key pair..."
+          apk add --no-cache openssl > /dev/null 2>&1
+          openssl genrsa -out /keys/private.pem 2048
+          openssl rsa -in /keys/private.pem -pubout -out /keys/public.pem
+          # Create base64 encoded version for the broker
+          cat /keys/private.pem | base64 -w 0 > /keys/private.b64
+          # Make keys readable by all (container runs as non-root)
+          chmod 644 /keys/*.pem /keys/*.b64
+          echo "Keys generated successfully"
+        else
+          echo "Keys already exist, skipping generation"
+        fi
+      '
+    volumes:
+      - keys:/keys
+
+  # Mock OAuth Provider - simulates Twitter, GitHub, Google
+  mock-provider:
+    build:
+      context: ..
+      dockerfile: demo/Dockerfile.mock-provider
+    ports:
+      - "9999:9999"
+    environment:
+      - PORT=9999
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # OIDC Broker - main application
+  broker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - APP_SESSION_SECRET=demo-session-secret-change-in-production
+      - APP_OIDC_ISSUER=http://localhost:3000
+      - APP_KEY_ID=demo-key-001
+      # Key will be read from file mounted by init container
+      - APP_KEY_PRIVATE_PEM_PATH=/keys/private.pem
+      # Configure OIDC clients (the debug UI uses test-client)
+      - APP_OIDC_CLIENTS=[{"client_id":"test-client","client_secret":"test-secret","redirect_uris":["http://localhost:3000/debug/callback"]}]
+      # Configure providers to use mock OAuth server
+      # Note: auth_url uses localhost (browser redirect), token_url/user_url use docker internal hostname (server-to-server)
+      - APP_PROVIDERS=[{"name":"twitter","client_id":"mock-twitter","client_secret":"mock-secret","callback_url":"http://localhost:3000/auth/twitter/callback","auth_url":"http://localhost:9999/twitter/authorize","token_url":"http://mock-provider:9999/twitter/token","user_url":"http://mock-provider:9999/twitter/user"},{"name":"github","client_id":"mock-github","client_secret":"mock-secret","callback_url":"http://localhost:3000/auth/github/callback","auth_url":"http://localhost:9999/github/authorize","token_url":"http://mock-provider:9999/github/token","user_url":"http://mock-provider:9999/github/user"},{"name":"google","client_id":"mock-google","client_secret":"mock-secret","callback_url":"http://localhost:3000/auth/google/callback","auth_url":"http://localhost:9999/google/authorize","token_url":"http://mock-provider:9999/google/token","user_url":"http://mock-provider:9999/google/userinfo"}]
+      # Enable debug mode for the demo UI
+      - APP_DEBUG_ENABLED=1
+      - APP_DEBUG_BASE_URL=http://localhost:3000
+      # Disable Redis - use in-memory stores
+      - APP_REDIS_ENABLED=0
+      - APP_SESSION_REDIS_STORE_ENABLED=0
+      - APP_AUTH_CODE_REDIS_STORE_ENABLED=0
+    volumes:
+      - keys:/keys:ro
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      mock-provider:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  keys:

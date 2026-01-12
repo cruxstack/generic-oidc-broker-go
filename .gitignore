@@ -1,0 +1,11 @@
+!**/.gitkeep
+
+tmp/
+dist/
+.DS_Store
+
+.local/
+.env
+
+bin/
+
