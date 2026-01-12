@@ -65,16 +65,6 @@ func buildDiscoveryDocument(issuer, jwksIssuer string) DiscoveryDocument {
 	}
 }
 
-// Discovery handles GET /.well-known/openid-configuration.
-func (h *Handlers) Discovery(w http.ResponseWriter, r *http.Request) {
-	doc := buildDiscoveryDocument(h.cfg.OIDCIssuer, "")
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(doc); err != nil {
-		h.logger.Error("failed to encode discovery document", "error", err)
-	}
-}
-
 // ProviderDiscovery handles GET /providers/{provider}/.well-known/openid-configuration.
 // Returns a provider-scoped discovery document with provider-specific issuer and endpoints.
 func (h *Handlers) ProviderDiscovery(w http.ResponseWriter, r *http.Request) {

@@ -30,7 +30,7 @@ func TestTokenEndpoint_ValidRequest(t *testing.T) {
 		ClientSecret: "test-secret",
 	}
 
-	resp, err := client.PostForm("/token", tokenParams.ToFormValues())
+	resp, err := client.PostForm("/providers/twitter/token", tokenParams.ToFormValues())
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -54,7 +54,7 @@ func TestTokenEndpoint_ValidRequest(t *testing.T) {
 
 	// Decode and verify claims
 	claims := decodeJWTClaims(t, idToken)
-	assert.Equal(t, ts.URL, claims["iss"], "issuer should match")
+	assert.Equal(t, ts.URL+"/providers/twitter", claims["iss"], "issuer should match provider-scoped issuer")
 	assert.NotEmpty(t, claims["sub"], "subject should be present")
 	assert.NotEmpty(t, claims["aud"], "audience should be present")
 	assert.NotEmpty(t, claims["exp"], "expiration should be present")
@@ -71,7 +71,7 @@ func TestTokenEndpoint_BasicAuth(t *testing.T) {
 		"code":       {code},
 	}
 
-	resp, err := client.PostFormWithBasicAuth("/token", data, "test-client", "test-secret")
+	resp, err := client.PostFormWithBasicAuth("/providers/twitter/token", data, "test-client", "test-secret")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -97,7 +97,7 @@ func TestTokenEndpoint_InvalidCode(t *testing.T) {
 		ClientSecret: "test-secret",
 	}
 
-	resp, err := client.PostForm("/token", tokenParams.ToFormValues())
+	resp, err := client.PostForm("/providers/twitter/token", tokenParams.ToFormValues())
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -123,7 +123,7 @@ func TestTokenEndpoint_InvalidClientCredentials(t *testing.T) {
 		ClientSecret: "wrong-secret",
 	}
 
-	resp, err := client.PostForm("/token", tokenParams.ToFormValues())
+	resp, err := client.PostForm("/providers/twitter/token", tokenParams.ToFormValues())
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -147,7 +147,7 @@ func TestTokenEndpoint_MissingCode(t *testing.T) {
 		ClientSecret: "test-secret",
 	}
 
-	resp, err := client.PostForm("/token", tokenParams.ToFormValues())
+	resp, err := client.PostForm("/providers/twitter/token", tokenParams.ToFormValues())
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -170,7 +170,7 @@ func TestTokenEndpoint_UnsupportedGrantType(t *testing.T) {
 		ClientSecret: "test-secret",
 	}
 
-	resp, err := client.PostForm("/token", tokenParams.ToFormValues())
+	resp, err := client.PostForm("/providers/twitter/token", tokenParams.ToFormValues())
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -197,13 +197,13 @@ func TestTokenEndpoint_CodeReuse(t *testing.T) {
 	}
 
 	// First exchange should succeed
-	resp1, err := client.PostForm("/token", tokenParams.ToFormValues())
+	resp1, err := client.PostForm("/providers/twitter/token", tokenParams.ToFormValues())
 	require.NoError(t, err)
 	resp1.Body.Close()
 	assert.Equal(t, http.StatusOK, resp1.StatusCode)
 
 	// Second exchange should fail (code is single-use)
-	resp2, err := client.PostForm("/token", tokenParams.ToFormValues())
+	resp2, err := client.PostForm("/providers/twitter/token", tokenParams.ToFormValues())
 	require.NoError(t, err)
 	defer resp2.Body.Close()
 	assert.Equal(t, http.StatusBadRequest, resp2.StatusCode)
