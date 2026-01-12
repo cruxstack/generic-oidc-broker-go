@@ -11,7 +11,7 @@ require (
 	github.com/knadh/koanf/v2 v2.3.0
 	github.com/lestrrat-go/jwx/v2 v2.1.6
 	github.com/redis/go-redis/v9 v9.17.2
-	github.com/stretchr/testify v1.10.0
+	github.com/stretchr/testify v1.11.1
 )
 
 require (
