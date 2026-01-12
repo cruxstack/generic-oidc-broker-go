@@ -103,12 +103,6 @@ func (h *Handlers) handleUserinfo(w http.ResponseWriter, r *http.Request, expect
 	}
 }
 
-// Userinfo handles GET /userinfo.
-// This returns user claims based on the access token.
-func (h *Handlers) Userinfo(w http.ResponseWriter, r *http.Request) {
-	h.handleUserinfo(w, r, "")
-}
-
 // ProviderUserinfo handles GET /providers/{provider}/userinfo.
 // This is the provider-scoped userinfo endpoint.
 // It validates that the token was issued with this provider's issuer.

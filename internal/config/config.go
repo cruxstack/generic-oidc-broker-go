@@ -39,17 +39,8 @@ type ProviderConfig struct {
 type Config struct {
 	Port int
 
-	// OAuth Providers (new multi-provider config)
+	// OAuth Providers
 	Providers []ProviderConfig
-
-	// Legacy Twitter OAuth (for backward compatibility)
-	// These are used if APP_PROVIDERS is not set
-	TwitterClientID     string
-	TwitterClientSecret string
-	TwitterCallbackURL  string
-	TwitterAuthURL      string // For testing - defaults to Twitter's URL
-	TwitterTokenURL     string // For testing - defaults to Twitter's URL
-	TwitterUserURL      string // For testing - defaults to Twitter's URL
 
 	// OIDC
 	OIDCIssuer  string
@@ -89,15 +80,6 @@ type Config struct {
 	DebugCognitoClientSecret string
 }
 
-// DefaultTwitterAuthURL is Twitter's OAuth 2.0 authorization endpoint.
-const DefaultTwitterAuthURL = "https://twitter.com/i/oauth2/authorize"
-
-// DefaultTwitterTokenURL is Twitter's OAuth 2.0 token endpoint.
-const DefaultTwitterTokenURL = "https://api.x.com/2/oauth2/token"
-
-// DefaultTwitterUserURL is Twitter's user info endpoint.
-const DefaultTwitterUserURL = "https://api.x.com/2/users/me"
-
 // envKeyTransform transforms environment variable names to koanf keys.
 // APP_TWITTER_CLIENT_ID -> twitter.client.id
 func envKeyTransform(s string) string {
@@ -115,7 +97,7 @@ func envKeyTransform(s string) string {
 // 3. Environment variables (override files)
 //
 // Environment variables use the APP_ prefix and underscore separation.
-// Example: APP_TWITTER_CLIENT_ID -> TwitterClientID
+// Example: APP_OIDC_ISSUER -> oidc.issuer
 func Load() (*Config, error) {
 	return LoadFromPath("")
 }
@@ -164,14 +146,6 @@ func LoadFromPath(path string) (*Config, error) {
 	cfg := &Config{
 		Port: k.Int("port"),
 
-		// Legacy Twitter config
-		TwitterClientID:     k.String("twitter.client.id"),
-		TwitterClientSecret: k.String("twitter.client.secret"),
-		TwitterCallbackURL:  k.String("twitter.callback.url"),
-		TwitterAuthURL:      k.String("twitter.auth.url"),
-		TwitterTokenURL:     k.String("twitter.token.url"),
-		TwitterUserURL:      k.String("twitter.user.url"),
-
 		// OIDC
 		OIDCIssuer: k.String("oidc.issuer"),
 
@@ -213,15 +187,6 @@ func LoadFromPath(path string) (*Config, error) {
 		cfg.Port = 3000
 	}
 
-	if cfg.TwitterAuthURL == "" {
-		cfg.TwitterAuthURL = DefaultTwitterAuthURL
-	}
-	if cfg.TwitterTokenURL == "" {
-		cfg.TwitterTokenURL = DefaultTwitterTokenURL
-	}
-	if cfg.TwitterUserURL == "" {
-		cfg.TwitterUserURL = DefaultTwitterUserURL
-	}
 	if cfg.RedisPort == 0 {
 		cfg.RedisPort = 6379
 	}
@@ -237,24 +202,6 @@ func LoadFromPath(path string) (*Config, error) {
 			return nil, fmt.Errorf("parsing providers JSON: %w", err)
 		}
 		cfg.Providers = providers
-	}
-
-	// Backward compatibility: if no providers configured but legacy Twitter config exists,
-	// create a Twitter provider from legacy config
-	if len(cfg.Providers) == 0 && cfg.TwitterClientID != "" {
-		prefixSubjectDefault := true
-		cfg.Providers = []ProviderConfig{
-			{
-				Name:          "twitter",
-				ClientID:      cfg.TwitterClientID,
-				ClientSecret:  cfg.TwitterClientSecret,
-				CallbackURL:   cfg.TwitterCallbackURL,
-				AuthURL:       cfg.TwitterAuthURL,
-				TokenURL:      cfg.TwitterTokenURL,
-				UserURL:       cfg.TwitterUserURL,
-				PrefixSubject: &prefixSubjectDefault,
-			},
-		}
 	}
 
 	// Apply defaults for providers

@@ -202,12 +202,6 @@ func (h *Handlers) createTokens(codeData *store.AuthCodeData, clientID string) (
 	return idToken, accessToken, nil
 }
 
-// Token handles POST /token.
-// This is the OIDC token endpoint.
-func (h *Handlers) Token(w http.ResponseWriter, r *http.Request) {
-	h.handleTokenExchange(w, r, "")
-}
-
 // ProviderToken handles POST /providers/{provider}/token.
 // This is the provider-scoped OIDC token endpoint.
 // It validates that the auth code was issued for this provider-scoped issuer.

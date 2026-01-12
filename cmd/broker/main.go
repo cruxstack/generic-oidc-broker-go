@@ -138,15 +138,6 @@ func run(logger *slog.Logger) error {
 	}
 	r.Use(appMiddleware.Session(sessionStore, cfg))
 
-	// Routes - Root OIDC endpoints (default provider)
-	r.Get("/.well-known/openid-configuration", handlers.Discovery)
-	r.Get("/.well-known/jwks.json", handlers.JWKS)
-	r.Get("/authorize", handlers.Authorize)
-	r.Post("/token", handlers.Token)
-
-	// Userinfo with rate limiting
-	r.With(appMiddleware.RateLimit(userinfoRateLimiter)).Get("/userinfo", handlers.Userinfo)
-
 	// Provider-scoped OIDC endpoints
 	// Each provider has its own issuer: {base_issuer}/providers/{provider_name}
 	r.Get("/providers/{provider}/.well-known/openid-configuration", handlers.ProviderDiscovery)

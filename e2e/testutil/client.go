@@ -140,6 +140,7 @@ type AuthorizeParams struct {
 	State        string
 	Nonce        string
 	Scope        string
+	Provider     string // Provider name for provider-scoped endpoint
 }
 
 // BuildAuthorizeURL builds an authorization URL with the given parameters.
@@ -163,7 +164,13 @@ func (p *AuthorizeParams) BuildAuthorizeURL(baseURL string) string {
 	if p.Scope != "" {
 		params.Set("scope", p.Scope)
 	}
-	return baseURL + "/authorize?" + params.Encode()
+
+	// Use provider-scoped endpoint
+	provider := p.Provider
+	if provider == "" {
+		provider = "twitter" // default provider for tests
+	}
+	return baseURL + "/providers/" + provider + "/authorize?" + params.Encode()
 }
 
 // TokenParams holds parameters for the token endpoint.

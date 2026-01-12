@@ -109,15 +109,7 @@ func NewTestServer(cfg *TestServerConfig) (*TestServer, error) {
 	appCfg := &config.Config{
 		Port: port,
 
-		// Legacy Twitter config (for backward compatibility)
-		TwitterClientID:     "mock-twitter-client",
-		TwitterClientSecret: "mock-twitter-secret",
-		TwitterCallbackURL:  fmt.Sprintf("http://localhost:%d/auth/twitter/callback", port),
-		TwitterAuthURL:      twitterAuthURL,
-		TwitterTokenURL:     twitterTokenURL,
-		TwitterUserURL:      twitterUserURL,
-
-		// New multi-provider config
+		// Provider config
 		Providers: []config.ProviderConfig{
 			{
 				Name:          "twitter",
@@ -209,13 +201,6 @@ func NewTestServer(cfg *TestServerConfig) (*TestServer, error) {
 		return nil, fmt.Errorf("creating session store: %w", err)
 	}
 	r.Use(appMiddleware.Session(sessionStore, appCfg))
-
-	// Routes - Root OIDC endpoints (default provider)
-	r.Get("/.well-known/openid-configuration", handlers.Discovery)
-	r.Get("/.well-known/jwks.json", handlers.JWKS)
-	r.Get("/authorize", handlers.Authorize)
-	r.Post("/token", handlers.Token)
-	r.Get("/userinfo", handlers.Userinfo)
 
 	// Provider-scoped OIDC endpoints
 	// Each provider has its own issuer: {base_issuer}/providers/{provider_name}

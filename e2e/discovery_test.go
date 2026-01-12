@@ -15,7 +15,7 @@ func TestDiscoveryEndpoint(t *testing.T) {
 	ts := getTestServer(t)
 	client := testutil.NewTestClient(ts.URL)
 
-	resp, err := client.Get("/.well-known/openid-configuration")
+	resp, err := client.Get("/providers/twitter/.well-known/openid-configuration")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -33,14 +33,15 @@ func TestDiscoveryEndpoint(t *testing.T) {
 	assert.NotEmpty(t, doc["token_endpoint"], "token_endpoint should be present")
 	assert.NotEmpty(t, doc["jwks_uri"], "jwks_uri should be present")
 
-	// Verify issuer matches config
-	assert.Equal(t, ts.URL, doc["issuer"])
+	// Verify issuer matches provider-scoped config
+	expectedIssuer := ts.URL + "/providers/twitter"
+	assert.Equal(t, expectedIssuer, doc["issuer"])
 
-	// Verify endpoints are properly formed
-	assert.Equal(t, ts.URL+"/authorize", doc["authorization_endpoint"])
-	assert.Equal(t, ts.URL+"/token", doc["token_endpoint"])
-	assert.Equal(t, ts.URL+"/userinfo", doc["userinfo_endpoint"])
-	assert.Equal(t, ts.URL+"/.well-known/jwks.json", doc["jwks_uri"])
+	// Verify endpoints are properly formed (provider-scoped)
+	assert.Equal(t, expectedIssuer+"/authorize", doc["authorization_endpoint"])
+	assert.Equal(t, expectedIssuer+"/token", doc["token_endpoint"])
+	assert.Equal(t, expectedIssuer+"/userinfo", doc["userinfo_endpoint"])
+	assert.Equal(t, expectedIssuer+"/.well-known/jwks.json", doc["jwks_uri"])
 
 	// Verify supported values
 	responseTypes, ok := doc["response_types_supported"].([]interface{})
@@ -65,7 +66,7 @@ func TestJWKSEndpoint(t *testing.T) {
 	ts := getTestServer(t)
 	client := testutil.NewTestClient(ts.URL)
 
-	resp, err := client.Get("/.well-known/jwks.json")
+	resp, err := client.Get("/providers/twitter/.well-known/jwks.json")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 

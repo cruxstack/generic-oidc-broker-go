@@ -20,7 +20,7 @@ func TestUserinfoEndpoint_ValidToken(t *testing.T) {
 
 	// Call userinfo endpoint
 	client := testutil.NewTestClient(ts.URL)
-	resp, err := client.GetWithAuth("/userinfo", accessToken)
+	resp, err := client.GetWithAuth("/providers/twitter/userinfo", accessToken)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -39,7 +39,7 @@ func TestUserinfoEndpoint_MissingToken(t *testing.T) {
 	ts := getTestServer(t)
 	client := testutil.NewTestClient(ts.URL)
 
-	resp, err := client.Get("/userinfo")
+	resp, err := client.Get("/providers/twitter/userinfo")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -54,7 +54,7 @@ func TestUserinfoEndpoint_InvalidToken(t *testing.T) {
 	ts := getTestServer(t)
 	client := testutil.NewTestClient(ts.URL)
 
-	resp, err := client.GetWithAuth("/userinfo", "invalid-token-12345")
+	resp, err := client.GetWithAuth("/providers/twitter/userinfo", "invalid-token-12345")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -70,7 +70,7 @@ func TestUserinfoEndpoint_MalformedAuthHeader(t *testing.T) {
 	ts := getTestServer(t)
 
 	// Create a custom request with malformed auth header
-	req, err := http.NewRequest(http.MethodGet, ts.URL+"/userinfo", nil)
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/providers/twitter/userinfo", nil)
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "NotBearer token123")
 
@@ -93,7 +93,7 @@ func exchangeCodeForToken(t *testing.T, ts *testutil.TestServer, code string) st
 		ClientSecret: "test-secret",
 	}
 
-	resp, err := client.PostForm("/token", tokenParams.ToFormValues())
+	resp, err := client.PostForm("/providers/twitter/token", tokenParams.ToFormValues())
 	require.NoError(t, err)
 	defer resp.Body.Close()
 

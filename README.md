@@ -135,25 +135,15 @@ Configure OIDC clients via `APP_OIDC_CLIENTS`:
 
 ### OIDC Endpoints
 
-**Root endpoints** (uses first configured provider):
+Each provider has its own issuer and endpoints:
 
-| Endpoint                                | Description          |
-|-----------------------------------------|----------------------|
-| `GET /.well-known/openid-configuration` | Discovery document   |
-| `GET /.well-known/jwks.json`            | JWKS endpoint        |
-| `GET /authorize`                        | Authorization        |
-| `POST /token`                           | Token endpoint       |
-| `GET /userinfo`                         | Userinfo endpoint    |
-
-**Provider-scoped endpoints** (for multi-provider setups):
-
-| Endpoint                                                     | Description                 |
-|--------------------------------------------------------------|-----------------------------|
-| `GET /providers/{provider}/.well-known/openid-configuration` | Provider-specific discovery |
-| `GET /providers/{provider}/.well-known/jwks.json`            | Provider-specific JWKS      |
-| `GET /providers/{provider}/authorize`                        | Provider-specific authorize |
-| `POST /providers/{provider}/token`                           | Provider-specific token     |
-| `GET /providers/{provider}/userinfo`                         | Provider-specific userinfo  |
+| Endpoint                                                     | Description         |
+|--------------------------------------------------------------|---------------------|
+| `GET /providers/{provider}/.well-known/openid-configuration` | Discovery document  |
+| `GET /providers/{provider}/.well-known/jwks.json`            | JWKS endpoint       |
+| `GET /providers/{provider}/authorize`                        | Authorization       |
+| `POST /providers/{provider}/token`                           | Token endpoint      |
+| `GET /providers/{provider}/userinfo`                         | Userinfo endpoint   |
 
 ### Supported Response Types
 

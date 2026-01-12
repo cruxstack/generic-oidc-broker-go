@@ -87,7 +87,7 @@ func TestFullOIDCFlow(t *testing.T) {
 		ClientSecret: "test-secret",
 	}
 
-	resp, err = client.PostForm("/token", tokenParams.ToFormValues())
+	resp, err = client.PostForm("/providers/twitter/token", tokenParams.ToFormValues())
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -105,7 +105,7 @@ func TestFullOIDCFlow(t *testing.T) {
 
 	// Step 6: Verify ID token claims
 	claims := decodeJWTClaims(t, idToken)
-	assert.Equal(t, ts.URL, claims["iss"], "issuer should match")
+	assert.Equal(t, ts.URL+"/providers/twitter", claims["iss"], "issuer should match provider-scoped issuer")
 	assert.Equal(t, "test-nonce-abc", claims["nonce"], "nonce should be preserved")
 
 	// Verify audience contains client_id
@@ -118,7 +118,7 @@ func TestFullOIDCFlow(t *testing.T) {
 	}
 
 	// Step 7: Call userinfo endpoint
-	resp, err = client.GetWithAuth("/userinfo", accessToken)
+	resp, err = client.GetWithAuth("/providers/twitter/userinfo", accessToken)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 

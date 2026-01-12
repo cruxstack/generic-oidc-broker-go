@@ -91,31 +91,6 @@ func (h *Handlers) storeAuthorizeSession(r *http.Request, w http.ResponseWriter,
 	}
 }
 
-// Authorize handles GET /authorize.
-// This is the OIDC authorization endpoint that uses the first configured provider.
-// For provider-specific authorization, use /providers/{provider}/authorize instead.
-func (h *Handlers) Authorize(w http.ResponseWriter, r *http.Request) {
-	params := h.parseAuthorizeParams(r)
-
-	if !h.validateAuthorizeParams(w, r, params) {
-		return
-	}
-
-	// Use first configured provider
-	availableProviders := h.providerRegistry.List()
-	if len(availableProviders) == 0 {
-		h.authorizeError(w, r, params.RedirectURI, params.State, "server_error", "No OAuth providers configured")
-		return
-	}
-	providerName := availableProviders[0]
-
-	// Store authorization parameters in session (no custom issuer for root endpoint)
-	h.storeAuthorizeSession(r, w, params, "")
-
-	// Redirect to OAuth provider authentication
-	http.Redirect(w, r, "/auth/"+providerName, http.StatusFound)
-}
-
 // ProviderAuthorize handles GET /providers/{provider}/authorize.
 // This is the provider-scoped OIDC authorization endpoint.
 func (h *Handlers) ProviderAuthorize(w http.ResponseWriter, r *http.Request) {
