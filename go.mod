@@ -3,7 +3,7 @@ module github.com/cruxstack/generic-oidc-broker
 go 1.24
 
 require (
-	github.com/go-chi/chi/v5 v5.2.3
+	github.com/go-chi/chi/v5 v5.2.5
 	github.com/gorilla/sessions v1.4.0
 	github.com/knadh/koanf/parsers/dotenv v1.1.1
 	github.com/knadh/koanf/providers/env v1.1.0
