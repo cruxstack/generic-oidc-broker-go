@@ -25,6 +25,7 @@ type RedisConfig struct {
 	Host   string
 	Port   int
 	Proto  string // "redis" or "rediss" (TLS)
+	User   string
 	Pass   string
 	DB     int
 	Prefix string
@@ -36,6 +37,7 @@ func NewRedisAuthCodeStore(cfg *RedisConfig) (*RedisAuthCodeStore, error) {
 
 	opts := &redis.Options{
 		Addr:     addr,
+		Username: cfg.User,
 		Password: cfg.Pass,
 		DB:       cfg.DB,
 	}
