@@ -91,6 +91,7 @@ func run(logger *slog.Logger) error {
 			Host:   cfg.RedisHost,
 			Port:   cfg.RedisPort,
 			Proto:  cfg.RedisProto,
+			User:   cfg.RedisUser,
 			Pass:   cfg.RedisPass,
 			DB:     cfg.RedisDB,
 			Prefix: cfg.AuthCodeRedisStorePrefix,

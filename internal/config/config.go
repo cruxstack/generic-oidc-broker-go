@@ -67,6 +67,7 @@ type Config struct {
 	RedisHost    string
 	RedisPort    int
 	RedisProto   string
+	RedisUser    string
 	RedisPass    string
 	RedisDB      int
 
@@ -169,6 +170,7 @@ func LoadFromPath(path string) (*Config, error) {
 		RedisHost:    k.String("redis.host"),
 		RedisPort:    k.Int("redis.port"),
 		RedisProto:   k.String("redis.proto"),
+		RedisUser:    k.String("redis.user"),
 		RedisPass:    k.String("redis.pass"),
 		RedisDB:      k.Int("redis.db"),
 

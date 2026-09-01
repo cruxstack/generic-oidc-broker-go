@@ -2,10 +2,9 @@
 
 ## What
 
-An OpenID Connect (OIDC) Identity Provider that acts as a broker between
-OAuth 2.0 providers and applications expecting OIDC authentication. It wraps
-OAuth flows from Twitter, GitHub, and Google into a single OIDC-compliant
-interface.
+An OpenID Connect (OIDC) Identity Provider that acts as a broker between OAuth
+2.0 providers and applications expecting OIDC authentication. It wraps OAuth
+flows from Twitter, GitHub, and Google into a single OIDC-compliant interface.
 
 ## Why
 
@@ -16,8 +15,8 @@ Many identity providers (especially Twitter/X) don't natively support OIDC.
 - **Enable OIDC-only services** (like AWS Cognito) to use OAuth-only providers
 - **Support multiple providers simultaneously** with provider-scoped OIDC
   endpoints
-- **Deploy a single broker** to serve multiple applications with different
-  OAuth providers
+- **Deploy a single broker** to serve multiple applications with different OAuth
+  providers
 
 ## How It Works
 
@@ -26,9 +25,8 @@ Many identity providers (especially Twitter/X) don't natively support OIDC.
    GitHub, or Google)
 3. After OAuth authentication, the broker exchanges the OAuth tokens for user
    info
-4. The broker issues standard OIDC tokens (ID token, access token) back to
-   your application
-
+4. The broker issues standard OIDC tokens (ID token, access token) back to your
+   application
 
 ## Deployment
 
@@ -52,7 +50,7 @@ Deploy as a standalone service and configure with environment variables.
 ### Environment Variables
 
 | Variable                   | Description                              | Default      |
-|----------------------------|------------------------------------------|--------------|
+| -------------------------- | ---------------------------------------- | ------------ |
 | `APP_OIDC_ISSUER`          | OIDC issuer URL (must match deployment)  | **required** |
 | `APP_OIDC_CLIENTS`         | JSON array of OIDC client configurations | `[]`         |
 | `APP_SESSION_SECRET`       | Session encryption key                   | **required** |
@@ -63,18 +61,19 @@ Deploy as a standalone service and configure with environment variables.
 
 **Provider Configuration:**
 
-| Variable        | Description                                |
-|-----------------|--------------------------------------------|
-| `APP_PROVIDERS` | JSON array of OAuth provider configs       |
+| Variable        | Description                          |
+| --------------- | ------------------------------------ |
+| `APP_PROVIDERS` | JSON array of OAuth provider configs |
 
 **Redis Configuration (optional, recommended for production):**
 
 | Variable                            | Description                    | Default     |
-|-------------------------------------|--------------------------------|-------------|
+| ----------------------------------- | ------------------------------ | ----------- |
 | `APP_REDIS_ENABLED`                 | Enable Redis connection        | `0`         |
 | `APP_REDIS_HOST`                    | Redis host                     | `localhost` |
 | `APP_REDIS_PORT`                    | Redis port                     | `6379`      |
 | `APP_REDIS_PROTO`                   | Protocol (`redis` or `rediss`) | `rediss`    |
+| `APP_REDIS_USER`                    | Redis username                 | -           |
 | `APP_REDIS_PASS`                    | Redis password                 | -           |
 | `APP_REDIS_DB`                      | Redis database number          | `0`         |
 | `APP_AUTH_CODE_REDIS_STORE_ENABLED` | Use Redis for auth codes       | `0`         |
@@ -116,8 +115,8 @@ Configure OAuth providers via `APP_PROVIDERS` as a JSON array:
 - `user_url`: Custom user info endpoint
 - `scopes`: Custom OAuth scopes
 - `prefix_subject`: Prefix `sub` claim with provider name (default: `true`).
-  When `true`, subjects are formatted as `twitter:12345`. When `false`,
-  subjects are just `12345`.
+  When `true`, subjects are formatted as `twitter:12345`. When `false`, subjects
+  are just `12345`.
 
 ### Client Configuration
 
@@ -137,13 +136,13 @@ Configure OIDC clients via `APP_OIDC_CLIENTS`:
 
 Each provider has its own issuer and endpoints:
 
-| Endpoint                                                     | Description         |
-|--------------------------------------------------------------|---------------------|
-| `GET /providers/{provider}/.well-known/openid-configuration` | Discovery document  |
-| `GET /providers/{provider}/.well-known/jwks.json`            | JWKS endpoint       |
-| `GET /providers/{provider}/authorize`                        | Authorization       |
-| `POST /providers/{provider}/token`                           | Token endpoint      |
-| `GET /providers/{provider}/userinfo`                         | Userinfo endpoint   |
+| Endpoint                                                     | Description        |
+| ------------------------------------------------------------ | ------------------ |
+| `GET /providers/{provider}/.well-known/openid-configuration` | Discovery document |
+| `GET /providers/{provider}/.well-known/jwks.json`            | JWKS endpoint      |
+| `GET /providers/{provider}/authorize`                        | Authorization      |
+| `POST /providers/{provider}/token`                           | Token endpoint     |
+| `GET /providers/{provider}/userinfo`                         | Userinfo endpoint  |
 
 ### Supported Response Types
 
@@ -162,7 +161,7 @@ Each provider has its own issuer and endpoints:
 **Claims supported:** `sub`, `name`, `preferred_username`, `email`,
 `email_verified`, `picture`, `iss`, `aud`, `exp`, `iat`, `nonce`
 
----
+______________________________________________________________________
 
 # Development
 
@@ -241,10 +240,10 @@ make demo-down   # Stop demo
 
 Enable debug routes for local testing:
 
-| Variable             | Description          | Default |
-|----------------------|----------------------|---------|
-| `APP_DEBUG_ENABLED`  | Enable debug routes  | `0`     |
-| `APP_DEBUG_BASE_URL` | Base URL for debug UI | -      |
+| Variable             | Description           | Default |
+| -------------------- | --------------------- | ------- |
+| `APP_DEBUG_ENABLED`  | Enable debug routes   | `0`     |
+| `APP_DEBUG_BASE_URL` | Base URL for debug UI | -       |
 
 Debug routes:
 
@@ -277,15 +276,15 @@ make docker-run
 
 ## Makefile Targets
 
-| Target              | Description          |
-|---------------------|----------------------|
-| `make build`        | Build the binary     |
-| `make dev`          | Run with hot reload  |
-| `make run`          | Run directly         |
-| `make test`         | Run all tests        |
-| `make test-e2e`     | Run E2E tests        |
-| `make lint`         | Run linter           |
-| `make fmt`          | Format code          |
-| `make docker-build` | Build Docker image   |
-| `make demo`         | Start offline demo   |
-| `make help`        | Show all targets     |
+| Target              | Description         |
+| ------------------- | ------------------- |
+| `make build`        | Build the binary    |
+| `make dev`          | Run with hot reload |
+| `make run`          | Run directly        |
+| `make test`         | Run all tests       |
+| `make test-e2e`     | Run E2E tests       |
+| `make lint`         | Run linter          |
+| `make fmt`          | Format code         |
+| `make docker-build` | Build Docker image  |
+| `make demo`         | Start offline demo  |
+| `make help`         | Show all targets    |
