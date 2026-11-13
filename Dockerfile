@@ -1,6 +1,6 @@
 # --------------------------------------------------------------------- build ---
 
-FROM golang:1.24-alpine AS build
+FROM golang:1.27-alpine3.24 AS build
 
 WORKDIR /app
 
@@ -19,7 +19,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /broker ./cmd/broker
 
 # ---------------------------------------------------------------------- dev ---
 
-FROM golang:1.24-alpine AS dev
+FROM golang:1.27-alpine3.24 AS dev
 
 WORKDIR /app
 
@@ -39,7 +39,7 @@ CMD ["air", "-c", ".air.toml"]
 
 # ------------------------------------------------------------------ runtime ---
 
-FROM alpine:3.19 AS runtime
+FROM alpine:3.24 AS runtime
 
 WORKDIR /app
 

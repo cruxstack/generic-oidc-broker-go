@@ -9,9 +9,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v2/jwa"
-	"github.com/lestrrat-go/jwx/v2/jwk"
-	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 
 	"github.com/cruxstack/generic-oidc-broker/internal/config"
 )
@@ -77,7 +77,7 @@ func NewTokenService(cfg *config.Config, logger *slog.Logger) (*TokenService, er
 	}
 
 	// Create JWK from public key for JWKS endpoint
-	pubJWK, err := jwk.FromRaw(&privateKey.PublicKey)
+	pubJWK, err := jwk.Import[jwk.Key](&privateKey.PublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("creating JWK from public key: %w", err)
 	}
@@ -86,7 +86,7 @@ func NewTokenService(cfg *config.Config, logger *slog.Logger) (*TokenService, er
 	if err := pubJWK.Set(jwk.KeyIDKey, cfg.KeyID); err != nil {
 		return nil, fmt.Errorf("setting key ID: %w", err)
 	}
-	if err := pubJWK.Set(jwk.AlgorithmKey, jwa.RS256); err != nil {
+	if err := pubJWK.Set(jwk.AlgorithmKey, jwa.RS256()); err != nil {
 		return nil, fmt.Errorf("setting algorithm: %w", err)
 	}
 	if err := pubJWK.Set(jwk.KeyUsageKey, "sig"); err != nil {
@@ -100,14 +100,14 @@ func NewTokenService(cfg *config.Config, logger *slog.Logger) (*TokenService, er
 	}
 
 	// Create signing key from private key with kid set
-	signingKey, err := jwk.FromRaw(privateKey)
+	signingKey, err := jwk.Import[jwk.Key](privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("creating signing key: %w", err)
 	}
 	if err := signingKey.Set(jwk.KeyIDKey, cfg.KeyID); err != nil {
 		return nil, fmt.Errorf("setting signing key ID: %w", err)
 	}
-	if err := signingKey.Set(jwk.AlgorithmKey, jwa.RS256); err != nil {
+	if err := signingKey.Set(jwk.AlgorithmKey, jwa.RS256()); err != nil {
 		return nil, fmt.Errorf("setting signing algorithm: %w", err)
 	}
 
@@ -182,7 +182,7 @@ func (s *TokenService) CreateIDToken(claims *IDTokenClaims) (string, error) {
 	}
 
 	// Sign the token using the signing key (which has kid set)
-	signed, err := jwt.Sign(token, jwt.WithKey(jwa.RS256, s.signingKey))
+	signed, err := jwt.Sign(token, jwt.WithKey(jwa.RS256(), s.signingKey))
 	if err != nil {
 		return "", fmt.Errorf("signing token: %w", err)
 	}
@@ -218,7 +218,7 @@ func (s *TokenService) CreateAccessToken(claims *AccessTokenClaims) (string, err
 	}
 
 	// Sign the token using the signing key (which has kid set)
-	signed, err := jwt.Sign(token, jwt.WithKey(jwa.RS256, s.signingKey))
+	signed, err := jwt.Sign(token, jwt.WithKey(jwa.RS256(), s.signingKey))
 	if err != nil {
 		return "", fmt.Errorf("signing token: %w", err)
 	}
@@ -234,13 +234,13 @@ func (s *TokenService) GetJWKS() jwk.Set {
 // ParseAccessToken parses and validates an access token.
 // It accepts tokens with the default issuer or any provider-scoped issuer.
 func (s *TokenService) ParseAccessToken(tokenString string) (jwt.Token, error) {
-	token, err := jwt.Parse([]byte(tokenString), jwt.WithKey(jwa.RS256, &s.privateKey.PublicKey))
+	token, err := jwt.Parse([]byte(tokenString), jwt.WithKey(jwa.RS256(), &s.privateKey.PublicKey))
 	if err != nil {
 		return nil, fmt.Errorf("parsing token: %w", err)
 	}
 
 	// Validate issuer - accept default issuer or any provider-scoped issuer
-	tokenIssuer := token.Issuer()
+	tokenIssuer, _ := token.Issuer()
 	if tokenIssuer != s.cfg.OIDCIssuer && !s.isProviderIssuer(tokenIssuer) {
 		return nil, fmt.Errorf("invalid issuer")
 	}

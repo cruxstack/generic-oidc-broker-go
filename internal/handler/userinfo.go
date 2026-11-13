@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 )
 
 // UserinfoResponse represents the userinfo endpoint response.
@@ -38,32 +38,33 @@ func (h *Handlers) extractBearerToken(w http.ResponseWriter, r *http.Request) st
 
 // buildUserinfoResponse builds the userinfo response from token claims.
 func buildUserinfoResponse(token jwt.Token) UserinfoResponse {
+	sub, _ := token.Subject()
 	resp := UserinfoResponse{
-		Sub: token.Subject(),
+		Sub: sub,
 	}
 
 	// Get additional claims if present
-	if name, ok := token.Get("name"); ok {
+	if name, ok := token.Field("name"); ok {
 		if nameStr, ok := name.(string); ok {
 			resp.Name = nameStr
 		}
 	}
-	if username, ok := token.Get("preferred_username"); ok {
+	if username, ok := token.Field("preferred_username"); ok {
 		if usernameStr, ok := username.(string); ok {
 			resp.PreferredUsername = usernameStr
 		}
 	}
-	if email, ok := token.Get("email"); ok {
+	if email, ok := token.Field("email"); ok {
 		if emailStr, ok := email.(string); ok {
 			resp.Email = emailStr
 		}
 	}
-	if emailVerified, ok := token.Get("email_verified"); ok {
+	if emailVerified, ok := token.Field("email_verified"); ok {
 		if emailVerifiedBool, ok := emailVerified.(bool); ok {
 			resp.EmailVerified = emailVerifiedBool
 		}
 	}
-	if picture, ok := token.Get("picture"); ok {
+	if picture, ok := token.Field("picture"); ok {
 		if pictureStr, ok := picture.(string); ok {
 			resp.Picture = pictureStr
 		}
@@ -89,7 +90,7 @@ func (h *Handlers) handleUserinfo(w http.ResponseWriter, r *http.Request, expect
 	}
 
 	// Validate issuer if expected (provider-scoped endpoint)
-	if expectedIssuer != "" && token.Issuer() != expectedIssuer {
+	if iss, _ := token.Issuer(); expectedIssuer != "" && iss != expectedIssuer {
 		h.userinfoError(w, http.StatusUnauthorized, "invalid_token", "Token was not issued for this provider")
 		return
 	}
