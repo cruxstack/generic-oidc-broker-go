@@ -1,7 +1,7 @@
 services:
   # Init container that generates RSA keys at startup
   init:
-    image: alpine:3.19
+    image: alpine:3.24
     command: |
       sh -c '
         if [ ! -f /keys/private.pem ]; then
