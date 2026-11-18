@@ -1,11 +1,16 @@
 !**/.gitkeep
 
-tmp/
-dist/
-.DS_Store
-
-.local/
-.env
-
+# Build output
 bin/
+dist/
+tmp/
+coverage.out
 
+# Local configuration and secrets
+.env
+.env.local
+.local/
+testdata/
+*.pem
+
+.DS_Store

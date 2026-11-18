@@ -1,231 +1,173 @@
 package handler
 
 import (
-	"encoding/base64"
-	"encoding/json"
+	"crypto/subtle"
+	"errors"
 	"net/http"
-	"strings"
 
-	"github.com/cruxstack/generic-oidc-broker/internal/service"
+	"golang.org/x/oauth2"
+
+	"github.com/cruxstack/generic-oidc-broker/internal/config"
+	"github.com/cruxstack/generic-oidc-broker/internal/middleware"
 	"github.com/cruxstack/generic-oidc-broker/internal/store"
-	"github.com/go-chi/chi/v5"
+	"github.com/cruxstack/generic-oidc-broker/internal/token"
 )
 
-// TokenRequest represents the token endpoint request.
-type TokenRequest struct {
-	GrantType    string `json:"grant_type"`
-	Code         string `json:"code"`
-	RedirectURI  string `json:"redirect_uri"`
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"`
-}
-
-// TokenResponse represents the token endpoint response.
-type TokenResponse struct {
+// tokenResponse is a successful token response (RFC 6749 §5.1).
+type tokenResponse struct {
 	AccessToken string `json:"access_token"`
 	TokenType   string `json:"token_type"`
 	ExpiresIn   int    `json:"expires_in"`
-	IDToken     string `json:"id_token,omitempty"`
-	Scope       string `json:"scope,omitempty"`
+	IDToken     string `json:"id_token"`
+	Scope       string `json:"scope"`
 }
 
-// TokenErrorResponse represents a token endpoint error.
-type TokenErrorResponse struct {
+// tokenErrorResponse is an error response from the token endpoint
+// (RFC 6749 §5.2).
+type tokenErrorResponse struct {
 	Error            string `json:"error"`
 	ErrorDescription string `json:"error_description,omitempty"`
 }
 
-// tokenParams holds parsed token request parameters.
-type tokenParams struct {
-	GrantType    string
-	Code         string
-	RedirectURI  string
-	ClientID     string
-	ClientSecret string
-}
-
-// parseTokenParams extracts token request parameters from form data and auth header.
-func (h *Handlers) parseTokenParams(r *http.Request) (*tokenParams, error) {
+// Token handles POST /providers/{provider}/token. Only the
+// authorization_code grant is supported.
+func (h *Handler) Token(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if err := r.ParseForm(); err != nil {
-		return nil, err
+		h.tokenError(w, http.StatusBadRequest, "invalid_request", "malformed request body")
+		return
 	}
 
-	params := &tokenParams{
-		GrantType:    r.FormValue("grant_type"),
-		Code:         r.FormValue("code"),
-		RedirectURI:  r.FormValue("redirect_uri"),
-		ClientID:     r.FormValue("client_id"),
-		ClientSecret: r.FormValue("client_secret"),
+	client, ok := h.authenticateTokenRequest(w, r)
+	if !ok {
+		return
 	}
 
-	// Check for Basic auth if credentials not in form
-	if params.ClientID == "" || params.ClientSecret == "" {
-		authHeader := r.Header.Get("Authorization")
-		if strings.HasPrefix(authHeader, "Basic ") {
-			decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(authHeader, "Basic "))
-			if err == nil {
-				parts := strings.SplitN(string(decoded), ":", 2)
-				if len(parts) == 2 {
-					params.ClientID = parts[0]
-					params.ClientSecret = parts[1]
-				}
-			}
-		}
+	switch grantType := r.PostForm.Get("grant_type"); grantType {
+	case "authorization_code":
+	case "":
+		h.tokenError(w, http.StatusBadRequest, "invalid_request", "grant_type is required")
+		return
+	default:
+		h.tokenError(w, http.StatusBadRequest, "unsupported_grant_type", "only the authorization_code grant is supported")
+		return
 	}
 
-	return params, nil
+	code, redirectURI := r.PostForm.Get("code"), r.PostForm.Get("redirect_uri")
+	if code == "" || redirectURI == "" {
+		h.tokenError(w, http.StatusBadRequest, "invalid_request", "code and redirect_uri are required")
+		return
+	}
+
+	data, err := h.codes.Consume(r.Context(), code)
+	if errors.Is(err, store.ErrNotFound) {
+		h.tokenError(w, http.StatusBadRequest, "invalid_grant", "the authorization code is invalid, expired or already used")
+		return
+	}
+	if err != nil {
+		h.logger.Error("reading authorization code", "error", err)
+		h.tokenError(w, http.StatusInternalServerError, "server_error", "could not read the authorization code")
+		return
+	}
+	if problem := checkRedemption(data, h.issuerFor(r), client.ClientID, redirectURI, r.PostForm.Get("code_verifier")); problem != "" {
+		h.tokenError(w, http.StatusBadRequest, "invalid_grant", problem)
+		return
+	}
+
+	resp, err := h.issueTokens(data)
+	if err != nil {
+		h.logger.Error("issuing tokens", "error", err)
+		h.tokenError(w, http.StatusInternalServerError, "server_error", "could not issue tokens")
+		return
+	}
+	h.writeJSON(w, http.StatusOK, resp)
 }
 
-// handleTokenExchange processes the token exchange logic shared by Token and ProviderToken.
-// expectedIssuer is optional - if provided, validates that the auth code was issued for this issuer.
-func (h *Handlers) handleTokenExchange(w http.ResponseWriter, r *http.Request, expectedIssuer string) {
-	params, err := h.parseTokenParams(r)
+// authenticateTokenRequest authenticates the client making a token request.
+// On failure it writes the error response and returns false. Clients that
+// fail repeatedly are locked out by IP address rather than client ID, so
+// that an attacker can't lock out a legitimate client.
+func (h *Handler) authenticateTokenRequest(w http.ResponseWriter, r *http.Request) (config.Client, bool) {
+	ipKey := middleware.ClientKey(r)
+	if blocked, retryAfter := h.authFailures.Blocked(ipKey); blocked {
+		middleware.SetRetryAfter(w, retryAfter)
+		h.tokenError(w, http.StatusTooManyRequests, "invalid_client", "too many failed client authentications; try again later")
+		return config.Client{}, false
+	}
+
+	creds, err := readClientCredentials(r)
+	if err != nil && !errors.Is(err, errNoClientAuth) {
+		h.tokenError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return config.Client{}, false
+	}
+	client, ok := h.authenticateClient(creds)
+	if err != nil || !ok {
+		h.authFailures.Record(ipKey)
+		if creds.basic {
+			w.Header().Set("WWW-Authenticate", `Basic realm="oidc-broker"`)
+		}
+		h.tokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+		return config.Client{}, false
+	}
+	return client, true
+}
+
+// checkRedemption returns why code may not be redeemed by this request, or
+// "" if it may.
+func checkRedemption(code store.AuthCode, issuer, clientID, redirectURI, verifier string) string {
+	switch {
+	case code.Issuer != issuer:
+		return "the authorization code was issued by a different provider"
+	case code.ClientID != clientID:
+		return "the authorization code was issued to a different client"
+	case code.RedirectURI != redirectURI:
+		return "redirect_uri does not match the authorization request"
+	case !verifyPKCE(code.CodeChallenge, verifier):
+		return "code_verifier is missing or does not match the code_challenge"
+	}
+	return ""
+}
+
+// verifyPKCE checks an RFC 7636 S256 code verifier against the challenge from
+// the authorization request. Without a challenge there must be no verifier,
+// which prevents PKCE downgrade attacks (RFC 9700 §2.1.1).
+func verifyPKCE(challenge, verifier string) bool {
+	if challenge == "" {
+		return verifier == ""
+	}
+	computed := oauth2.S256ChallengeFromVerifier(verifier)
+	return verifier != "" && subtle.ConstantTimeCompare([]byte(computed), []byte(challenge)) == 1
+}
+
+// issueTokens signs the ID and access tokens for a redeemed code.
+func (h *Handler) issueTokens(code store.AuthCode) (tokenResponse, error) {
+	idToken, err := h.tokens.SignIDToken(token.IDToken{
+		Issuer:   code.Issuer,
+		ClientID: code.ClientID,
+		Identity: code.Identity,
+		Nonce:    code.Nonce,
+	})
 	if err != nil {
-		h.tokenError(w, http.StatusBadRequest, "invalid_request", "Failed to parse request body")
-		return
+		return tokenResponse{}, err
 	}
-
-	// Validate grant type
-	if params.GrantType != "authorization_code" {
-		h.tokenError(w, http.StatusBadRequest, "unsupported_grant_type", "Only authorization_code grant type is supported")
-		return
-	}
-
-	// Validate required parameters
-	if params.Code == "" {
-		h.tokenError(w, http.StatusBadRequest, "invalid_request", "Missing code parameter")
-		return
-	}
-
-	if params.ClientID == "" {
-		h.tokenError(w, http.StatusBadRequest, "invalid_request", "Missing client_id parameter")
-		return
-	}
-
-	// Validate client credentials
-	if !h.clientService.ValidateClient(params.ClientID, params.ClientSecret) {
-		h.tokenError(w, http.StatusUnauthorized, "invalid_client", "Invalid client credentials")
-		return
-	}
-
-	// Get authorization code data
-	codeData, err := h.authCodeStore.Get(params.Code)
+	accessToken, err := h.tokens.SignAccessToken(token.AccessToken{
+		Issuer:   code.Issuer,
+		ClientID: code.ClientID,
+		Scope:    code.Scope,
+		Identity: code.Identity,
+	})
 	if err != nil {
-		h.logger.Error("failed to get auth code", "error", err)
-		h.tokenError(w, http.StatusInternalServerError, "server_error", "Internal server error")
-		return
+		return tokenResponse{}, err
 	}
-
-	if codeData == nil {
-		h.tokenError(w, http.StatusBadRequest, "invalid_grant", "Invalid or expired authorization code")
-		return
-	}
-
-	// Validate issuer if expected (provider-scoped endpoint)
-	if expectedIssuer != "" && codeData.Issuer != expectedIssuer {
-		h.tokenError(w, http.StatusBadRequest, "invalid_grant", "Authorization code was not issued for this provider")
-		return
-	}
-
-	// Validate client ID matches
-	if codeData.ClientID != params.ClientID {
-		h.tokenError(w, http.StatusBadRequest, "invalid_grant", "Client ID mismatch")
-		return
-	}
-
-	// Validate redirect URI matches (if provided)
-	if params.RedirectURI != "" && codeData.RedirectURI != params.RedirectURI {
-		h.tokenError(w, http.StatusBadRequest, "invalid_grant", "Redirect URI mismatch")
-		return
-	}
-
-	// Create tokens
-	idToken, accessToken, err := h.createTokens(codeData, params.ClientID)
-	if err != nil {
-		h.logger.Error("failed to create tokens", "error", err)
-		h.tokenError(w, http.StatusInternalServerError, "server_error", "Failed to create tokens")
-		return
-	}
-
-	// Return token response
-	resp := TokenResponse{
+	return tokenResponse{
 		AccessToken: accessToken,
 		TokenType:   "Bearer",
-		ExpiresIn:   AccessTokenExpiresInSeconds,
+		ExpiresIn:   int(token.AccessTokenTTL.Seconds()),
 		IDToken:     idToken,
-		Scope:       codeData.Scope,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Pragma", "no-cache")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		h.logger.Error("failed to encode token response", "error", err)
-	}
+		Scope:       code.Scope,
+	}, nil
 }
 
-// createTokens creates ID and access tokens from authorization code data.
-func (h *Handlers) createTokens(codeData *store.AuthCodeData, clientID string) (idToken, accessToken string, err error) {
-	// Determine if subject should be prefixed based on provider config
-	prefixSubject := false
-	if p := h.providerRegistry.Get(codeData.UserData.Provider); p != nil {
-		prefixSubject = p.PrefixSubject()
-	}
-
-	// Create ID token
-	idToken, err = h.tokenService.CreateIDToken(&service.IDTokenClaims{
-		Subject:         codeData.UserData.Subject(prefixSubject),
-		Name:            codeData.UserData.Name,
-		PreferredUser:   codeData.UserData.Username,
-		Email:           codeData.UserData.Email,
-		EmailVerified:   codeData.UserData.EmailVerified,
-		ProfileImageURL: codeData.UserData.ProfileImageURL,
-		ClientID:        clientID,
-		Nonce:           codeData.Nonce,
-		Issuer:          codeData.Issuer,
-	})
-	if err != nil {
-		return "", "", err
-	}
-
-	// Create access token
-	accessToken, err = h.tokenService.CreateAccessToken(&service.AccessTokenClaims{
-		Subject:  codeData.UserData.Subject(prefixSubject),
-		ClientID: clientID,
-		Scope:    codeData.Scope,
-		Issuer:   codeData.Issuer,
-	})
-	if err != nil {
-		return "", "", err
-	}
-
-	return idToken, accessToken, nil
-}
-
-// ProviderToken handles POST /providers/{provider}/token.
-// This is the provider-scoped OIDC token endpoint.
-// It validates that the auth code was issued for this provider-scoped issuer.
-func (h *Handlers) ProviderToken(w http.ResponseWriter, r *http.Request) {
-	providerName := chi.URLParam(r, "provider")
-
-	// Validate provider exists
-	if h.providerRegistry.Get(providerName) == nil {
-		h.tokenError(w, http.StatusNotFound, "invalid_request", "Unknown provider")
-		return
-	}
-
-	expectedIssuer := h.cfg.ProviderIssuer(providerName)
-	h.handleTokenExchange(w, r, expectedIssuer)
-}
-
-// tokenError sends a JSON error response for the token endpoint.
-func (h *Handlers) tokenError(w http.ResponseWriter, status int, errorCode, errorDescription string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(TokenErrorResponse{
-		Error:            errorCode,
-		ErrorDescription: errorDescription,
-	}); err != nil {
-		h.logger.Error("failed to encode token error response", "error", err)
-	}
+func (h *Handler) tokenError(w http.ResponseWriter, status int, code, description string) {
+	h.writeJSON(w, status, tokenErrorResponse{Error: code, ErrorDescription: description})
 }

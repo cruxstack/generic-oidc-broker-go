@@ -1,127 +1,42 @@
 package handler
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
-
-	"github.com/go-chi/chi/v5"
-	"github.com/lestrrat-go/jwx/v4/jwt"
 )
 
-// UserinfoResponse represents the userinfo endpoint response.
-type UserinfoResponse struct {
-	Sub               string `json:"sub"`
-	Name              string `json:"name,omitempty"`
-	PreferredUsername string `json:"preferred_username,omitempty"`
-	Email             string `json:"email,omitempty"`
-	EmailVerified     bool   `json:"email_verified,omitempty"`
-	Picture           string `json:"picture,omitempty"`
-}
+// Userinfo handles GET and POST /providers/{provider}/userinfo (OIDC Core
+// §5.3). It returns the claims of the user the access token was issued for.
+func (h *Handler) Userinfo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 
-// extractBearerToken extracts the bearer token from the Authorization header.
-// Returns empty string and sends error response if invalid.
-func (h *Handlers) extractBearerToken(w http.ResponseWriter, r *http.Request) string {
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		h.userinfoError(w, http.StatusUnauthorized, "invalid_token", "Missing Authorization header")
-		return ""
+	raw, ok := bearerToken(r)
+	if !ok {
+		// RFC 6750 §3.1: requests without credentials get no error code.
+		w.Header().Set("WWW-Authenticate", `Bearer realm="oidc-broker"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
 	}
 
-	if !strings.HasPrefix(authHeader, "Bearer ") {
-		h.userinfoError(w, http.StatusUnauthorized, "invalid_token", "Invalid Authorization header format")
-		return ""
-	}
-
-	return strings.TrimPrefix(authHeader, "Bearer ")
-}
-
-// buildUserinfoResponse builds the userinfo response from token claims.
-func buildUserinfoResponse(token jwt.Token) UserinfoResponse {
-	sub, _ := token.Subject()
-	resp := UserinfoResponse{
-		Sub: sub,
-	}
-
-	// Get additional claims if present
-	if name, ok := token.Field("name"); ok {
-		if nameStr, ok := name.(string); ok {
-			resp.Name = nameStr
-		}
-	}
-	if username, ok := token.Field("preferred_username"); ok {
-		if usernameStr, ok := username.(string); ok {
-			resp.PreferredUsername = usernameStr
-		}
-	}
-	if email, ok := token.Field("email"); ok {
-		if emailStr, ok := email.(string); ok {
-			resp.Email = emailStr
-		}
-	}
-	if emailVerified, ok := token.Field("email_verified"); ok {
-		if emailVerifiedBool, ok := emailVerified.(bool); ok {
-			resp.EmailVerified = emailVerifiedBool
-		}
-	}
-	if picture, ok := token.Field("picture"); ok {
-		if pictureStr, ok := picture.(string); ok {
-			resp.Picture = pictureStr
-		}
-	}
-
-	return resp
-}
-
-// handleUserinfo processes the userinfo request logic shared by Userinfo and ProviderUserinfo.
-// expectedIssuer is optional - if provided, validates that the token was issued with this issuer.
-func (h *Handlers) handleUserinfo(w http.ResponseWriter, r *http.Request, expectedIssuer string) {
-	tokenString := h.extractBearerToken(w, r)
-	if tokenString == "" {
-		return // Error already sent
-	}
-
-	// Parse and validate the access token
-	token, err := h.tokenService.ParseAccessToken(tokenString)
+	accessToken, err := h.tokens.VerifyAccessToken(raw, h.issuerFor(r))
 	if err != nil {
-		h.logger.Debug("failed to parse access token", "error", err)
-		h.userinfoError(w, http.StatusUnauthorized, "invalid_token", "Invalid or expired token")
+		h.logger.Debug("rejected access token", "error", err)
+		w.Header().Set("WWW-Authenticate",
+			`Bearer realm="oidc-broker", error="invalid_token", error_description="The access token is invalid or expired"`)
+		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 
-	// Validate issuer if expected (provider-scoped endpoint)
-	if iss, _ := token.Issuer(); expectedIssuer != "" && iss != expectedIssuer {
-		h.userinfoError(w, http.StatusUnauthorized, "invalid_token", "Token was not issued for this provider")
-		return
-	}
-
-	// Build and return userinfo response
-	resp := buildUserinfoResponse(token)
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		h.logger.Error("failed to encode userinfo response", "error", err)
-	}
+	h.writeJSON(w, http.StatusOK, accessToken.Identity.Claims())
 }
 
-// ProviderUserinfo handles GET /providers/{provider}/userinfo.
-// This is the provider-scoped userinfo endpoint.
-// It validates that the token was issued with this provider's issuer.
-func (h *Handlers) ProviderUserinfo(w http.ResponseWriter, r *http.Request) {
-	providerName := chi.URLParam(r, "provider")
-
-	// Validate provider exists
-	if h.providerRegistry.Get(providerName) == nil {
-		http.Error(w, "Unknown provider", http.StatusNotFound)
-		return
+// bearerToken returns the token from an "Authorization: Bearer" header. The
+// scheme is case-insensitive (RFC 9110 §11.1).
+func bearerToken(r *http.Request) (string, bool) {
+	scheme, credentials, ok := strings.Cut(r.Header.Get("Authorization"), " ")
+	credentials = strings.TrimSpace(credentials)
+	if !ok || !strings.EqualFold(scheme, "Bearer") || credentials == "" {
+		return "", false
 	}
-
-	expectedIssuer := h.cfg.ProviderIssuer(providerName)
-	h.handleUserinfo(w, r, expectedIssuer)
-}
-
-// userinfoError sends an error response for the userinfo endpoint.
-func (h *Handlers) userinfoError(w http.ResponseWriter, status int, errorCode, errorDescription string) {
-	w.Header().Set("WWW-Authenticate", `Bearer error="`+errorCode+`", error_description="`+errorDescription+`"`)
-	w.WriteHeader(status)
+	return credentials, true
 }

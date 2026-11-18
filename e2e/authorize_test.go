@@ -2,6 +2,8 @@ package e2e
 
 import (
 	"net/http"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,164 +12,108 @@ import (
 	"github.com/cruxstack/generic-oidc-broker/e2e/testutil"
 )
 
-func TestAuthorizeEndpoint_ValidRequest(t *testing.T) {
-	ts := getTestServer(t)
-	client := testutil.NewTestClient(ts.URL)
+func TestAuthorize_RedirectsToProvider(t *testing.T) {
+	s := testutil.NewServer(t)
 
-	params := &testutil.AuthorizeParams{
-		ClientID:     "test-client",
-		RedirectURI:  ts.URL + "/callback",
-		ResponseType: "code",
-		State:        "test-state-123",
-		Nonce:        "test-nonce-456",
-		Scope:        "openid",
+	tests := []struct {
+		provider string
+		pkce     bool
+	}{
+		{"twitter", true},
+		{"github", false},
+		{"google", true},
 	}
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			resp := testutil.NewBrowser(t).Authorize(s, tt.provider, s.AuthParams())
+			require.Equal(t, http.StatusFound, resp.StatusCode, resp.Text)
 
-	resp, err := client.Client.Get(params.BuildAuthorizeURL(ts.URL))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	// Should redirect to Twitter auth
-	assert.Equal(t, http.StatusFound, resp.StatusCode)
-	loc := resp.Header.Get("Location")
-	assert.Contains(t, loc, "/auth/twitter")
-}
-
-func TestAuthorizeEndpoint_MissingClientID(t *testing.T) {
-	ts := getTestServer(t)
-	client := testutil.NewTestClient(ts.URL)
-
-	params := &testutil.AuthorizeParams{
-		RedirectURI:  ts.URL + "/callback",
-		ResponseType: "code",
-		State:        "test-state",
-	}
-
-	resp, err := client.Client.Get(params.BuildAuthorizeURL(ts.URL))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	// Should return error (redirect with error or direct error)
-	// The behavior depends on implementation - some return 400, some redirect with error
-	if resp.StatusCode == http.StatusFound {
-		loc, err := testutil.GetRedirectLocation(resp)
-		require.NoError(t, err)
-		assert.Equal(t, "invalid_request", loc.Query().Get("error"))
-	} else {
-		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			loc := resp.Location()
+			query := loc.Query()
+			assert.Equal(t, "/"+tt.provider+"/authorize", loc.Path)
+			assert.Equal(t, tt.provider+"-client", query.Get("client_id"))
+			assert.Equal(t, s.URL+"/auth/"+tt.provider+"/callback", query.Get("redirect_uri"))
+			assert.NotEmpty(t, query.Get("state"))
+			assert.NotEqual(t, "client-state", query.Get("state"), "the client's state must not be reused upstream")
+			if tt.pkce {
+				assert.Equal(t, "S256", query.Get("code_challenge_method"))
+				assert.NotEmpty(t, query.Get("code_challenge"))
+			} else {
+				assert.Empty(t, query.Get("code_challenge"))
+			}
+		})
 	}
 }
 
-func TestAuthorizeEndpoint_InvalidClientID(t *testing.T) {
-	ts := getTestServer(t)
-	client := testutil.NewTestClient(ts.URL)
+func TestAuthorize_UnknownProvider(t *testing.T) {
+	s := testutil.NewServer(t)
 
-	params := &testutil.AuthorizeParams{
-		ClientID:     "unknown-client",
-		RedirectURI:  ts.URL + "/callback",
-		ResponseType: "code",
-		State:        "test-state",
+	resp := testutil.NewBrowser(t).Get(s.URL + "/providers/unknown/authorize?" + s.AuthParams().Encode())
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// Errors are never redirected until the client and redirect URI are known to
+// be valid; otherwise the endpoint would be an open redirector.
+func TestAuthorize_UntrustedRedirectErrorsAreNotRedirected(t *testing.T) {
+	s := testutil.NewServer(t)
+
+	const evil = "https://evil.example/callback"
+	tests := map[string]func(url.Values){
+		"missing client_id":       func(p url.Values) { p.Del("client_id"); p.Set("redirect_uri", evil) },
+		"unknown client_id":       func(p url.Values) { p.Set("client_id", "unknown"); p.Set("redirect_uri", evil) },
+		"missing redirect_uri":    func(p url.Values) { p.Del("redirect_uri") },
+		"unregistered redirect":   func(p url.Values) { p.Set("redirect_uri", evil) },
+		"bad response_type too":   func(p url.Values) { p.Set("redirect_uri", evil); p.Set("response_type", "bogus") },
+		"extended registered URI": func(p url.Values) { p.Set("redirect_uri", s.URL+"/callback/extra") },
 	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			params := s.AuthParams()
+			mutate(params)
 
-	resp, err := client.Client.Get(params.BuildAuthorizeURL(ts.URL))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	// Should return unauthorized_client error
-	if resp.StatusCode == http.StatusFound {
-		loc, err := testutil.GetRedirectLocation(resp)
-		require.NoError(t, err)
-		assert.Equal(t, "unauthorized_client", loc.Query().Get("error"))
-	} else {
-		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			resp := testutil.NewBrowser(t).Authorize(s, "github", params)
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			assert.Empty(t, resp.Header.Get("Location"))
+		})
 	}
 }
 
-func TestAuthorizeEndpoint_InvalidRedirectURI(t *testing.T) {
-	ts := getTestServer(t)
-	client := testutil.NewTestClient(ts.URL)
+func TestAuthorize_ErrorsAreRedirectedToClient(t *testing.T) {
+	s := testutil.NewServer(t)
 
-	params := &testutil.AuthorizeParams{
-		ClientID:     "test-client",
-		RedirectURI:  "https://evil.com/callback", // Not registered
-		ResponseType: "code",
-		State:        "test-state",
+	tests := []struct {
+		name      string
+		mutate    func(url.Values)
+		wantError string
+		fragment  bool
+	}{
+		{"missing response_type", func(p url.Values) { p.Del("response_type") }, "unsupported_response_type", false},
+		{"implicit access token", func(p url.Values) { p.Set("response_type", "id_token token") }, "unsupported_response_type", false},
+		{"token", func(p url.Values) { p.Set("response_type", "token") }, "unsupported_response_type", false},
+		{"missing openid scope", func(p url.Values) { p.Set("scope", "profile email") }, "invalid_scope", false},
+		{"id_token without nonce", func(p url.Values) { p.Set("response_type", "id_token"); p.Del("nonce") }, "invalid_request", true},
+		{"plain PKCE", func(p url.Values) {
+			p.Set("code_challenge", strings.Repeat("a", 43))
+			p.Set("code_challenge_method", "plain")
+		}, "invalid_request", false},
+		{"PKCE method without challenge", func(p url.Values) { p.Set("code_challenge_method", "S256") }, "invalid_request", false},
+		{"oversized nonce", func(p url.Values) { p.Set("nonce", strings.Repeat("n", 513)) }, "invalid_request", false},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := s.AuthParams()
+			tt.mutate(params)
 
-	resp, err := client.Client.Get(params.BuildAuthorizeURL(ts.URL))
-	require.NoError(t, err)
-	defer resp.Body.Close()
+			resp := testutil.NewBrowser(t).Authorize(s, "github", params)
+			require.Equal(t, http.StatusFound, resp.StatusCode, resp.Text)
 
-	// Should NOT redirect to the invalid URI - should return error directly
-	assert.NotEqual(t, http.StatusFound, resp.StatusCode, "should not redirect to unregistered URI")
-}
-
-func TestAuthorizeEndpoint_MissingResponseType(t *testing.T) {
-	ts := getTestServer(t)
-	client := testutil.NewTestClient(ts.URL)
-
-	params := &testutil.AuthorizeParams{
-		ClientID:    "test-client",
-		RedirectURI: ts.URL + "/callback",
-		State:       "test-state",
+			loc := resp.Location()
+			assert.Equal(t, s.URL+"/callback", loc.Scheme+"://"+loc.Host+loc.Path)
+			assert.Equal(t, tt.fragment, loc.Fragment != "", "error must use the response mode of the response type")
+			got := testutil.ResponseParams(t, loc)
+			assert.Equal(t, tt.wantError, got.Get("error"))
+			assert.Equal(t, "client-state", got.Get("state"))
+			assert.Equal(t, s.Issuer("github"), got.Get("iss"))
+		})
 	}
-
-	resp, err := client.Client.Get(params.BuildAuthorizeURL(ts.URL))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	// Should return error
-	if resp.StatusCode == http.StatusFound {
-		loc, err := testutil.GetRedirectLocation(resp)
-		require.NoError(t, err)
-		assert.Equal(t, "invalid_request", loc.Query().Get("error"))
-	} else {
-		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-	}
-}
-
-func TestAuthorizeEndpoint_UnsupportedResponseType(t *testing.T) {
-	ts := getTestServer(t)
-	client := testutil.NewTestClient(ts.URL)
-
-	params := &testutil.AuthorizeParams{
-		ClientID:     "test-client",
-		RedirectURI:  ts.URL + "/callback",
-		ResponseType: "unsupported_type",
-		State:        "test-state",
-	}
-
-	resp, err := client.Client.Get(params.BuildAuthorizeURL(ts.URL))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	// Should return unsupported_response_type error
-	if resp.StatusCode == http.StatusFound {
-		loc, err := testutil.GetRedirectLocation(resp)
-		require.NoError(t, err)
-		assert.Equal(t, "unsupported_response_type", loc.Query().Get("error"))
-	} else {
-		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-	}
-}
-
-func TestAuthorizeEndpoint_StatePreserved(t *testing.T) {
-	ts := getTestServer(t)
-	client := testutil.NewTestClient(ts.URL)
-
-	expectedState := "my-unique-state-value-12345"
-	params := &testutil.AuthorizeParams{
-		ClientID:     "test-client",
-		RedirectURI:  ts.URL + "/callback",
-		ResponseType: "code",
-		State:        expectedState,
-	}
-
-	resp, err := client.Client.Get(params.BuildAuthorizeURL(ts.URL))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	// The state should be preserved through the flow
-	// For now, just verify we get a redirect
-	assert.Equal(t, http.StatusFound, resp.StatusCode)
 }

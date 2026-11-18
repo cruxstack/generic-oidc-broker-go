@@ -1,66 +1,53 @@
-# --------------------------------------------------------------------- build ---
+# Builds two images:
+#   docker build .                         the broker (default target)
+#   docker build --target mock-provider .  the mock OAuth provider for the demo
 
-FROM golang:1.27-alpine3.24 AS build
+# ----------------------------------------------------------------------- build ---
 
-WORKDIR /app
+FROM golang:1.27.4-alpine3.24 AS build
 
-# Install build dependencies
-RUN apk add --no-cache git ca-certificates
+WORKDIR /src
 
-# Copy go mod files first for caching
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
 COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/ ./cmd/...
 
-# Build the binary
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /broker ./cmd/broker
+# ------------------------------------------------------------------------ base ---
 
-# ---------------------------------------------------------------------- dev ---
+FROM alpine:3.24 AS base
 
-FROM golang:1.27-alpine3.24 AS dev
+# CA certificates for HTTPS requests to the upstream providers.
+RUN apk add --no-cache ca-certificates \
+    && adduser -D -H -u 10001 app
 
+# The broker reads an optional .env file from its working directory.
 WORKDIR /app
+USER app
 
-# Install development tools
-RUN apk add --no-cache git ca-certificates
-RUN go install github.com/air-verse/air@latest
+# --------------------------------------------------------------- mock-provider ---
 
-# Copy go mod files
-COPY go.mod go.sum ./
-RUN go mod download
+FROM base AS mock-provider
 
-# Copy source code
-COPY . .
+COPY --from=build /out/mock-provider /usr/local/bin/mock-provider
 
-# Run with hot reload
-CMD ["air", "-c", ".air.toml"]
+ENV PORT=9999
+EXPOSE 9999
+HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget -q --spider "http://127.0.0.1:${PORT}/health" || exit 1
 
-# ------------------------------------------------------------------ runtime ---
+ENTRYPOINT ["/usr/local/bin/mock-provider"]
 
-FROM alpine:3.24 AS runtime
+# ---------------------------------------------------------------------- broker ---
 
-WORKDIR /app
+FROM base AS broker
 
-# Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata
+COPY --from=build /out/broker /usr/local/bin/broker
 
-# Create non-root user
-RUN adduser -D -g '' appuser
-
-# Copy binary from build stage
-COPY --from=build /broker /app/broker
-
-# Switch to non-root user
-USER appuser
-
-# Expose port
+ENV PORT=3000
 EXPOSE 3000
-
-# Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+    CMD wget -q --spider "http://127.0.0.1:${PORT}/health" || exit 1
 
-# Run the binary
-ENTRYPOINT ["/app/broker"]
+ENTRYPOINT ["/usr/local/bin/broker"]

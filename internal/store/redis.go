@@ -4,115 +4,76 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/cruxstack/generic-oidc-broker/internal/config"
 )
 
-// Redis connection timeout.
-const redisConnectTimeout = 10 * time.Second
-
-// RedisAuthCodeStore is a Redis-backed implementation of AuthCodeStore.
-type RedisAuthCodeStore struct {
+// Redis keeps authorization codes in Redis, so any broker instance can
+// redeem a code issued by another. It requires Redis 6.2 or later (GETDEL).
+type Redis struct {
 	client *redis.Client
 	prefix string
-	ttl    time.Duration
 }
 
-// RedisConfig holds Redis connection configuration.
-type RedisConfig struct {
-	Host   string
-	Port   int
-	Proto  string // "redis" or "rediss" (TLS)
-	User   string
-	Pass   string
-	DB     int
-	Prefix string
-}
-
-// NewRedisAuthCodeStore creates a new Redis-backed auth code store.
-func NewRedisAuthCodeStore(cfg *RedisConfig) (*RedisAuthCodeStore, error) {
-	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
-
+// NewRedis connects to Redis and verifies the connection.
+func NewRedis(ctx context.Context, cfg config.Redis, keyPrefix string) (*Redis, error) {
 	opts := &redis.Options{
-		Addr:     addr,
-		Username: cfg.User,
-		Password: cfg.Pass,
-		DB:       cfg.DB,
+		Addr:         cfg.Addr(),
+		Username:     cfg.Username,
+		Password:     cfg.Password,
+		DB:           cfg.DB,
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  3 * time.Second,
+		WriteTimeout: 3 * time.Second,
 	}
-
-	// Enable TLS for rediss:// protocol
-	if cfg.Proto == "rediss" {
-		opts.TLSConfig = &tls.Config{
-			MinVersion: tls.VersionTLS12,
-		}
+	if cfg.TLS {
+		opts.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
-
 	client := redis.NewClient(opts)
 
-	// Test connection
-	ctx, cancel := context.WithTimeout(context.Background(), redisConnectTimeout)
+	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-
-	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("connecting to Redis: %w", err)
+	if err := client.Ping(pingCtx).Err(); err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("connecting to Redis at %s: %w", cfg.Addr(), err)
 	}
-
-	prefix := cfg.Prefix
-	if prefix == "" {
-		prefix = "authcode:"
-	}
-
-	return &RedisAuthCodeStore{
-		client: client,
-		prefix: prefix,
-		ttl:    AuthCodeTTL,
-	}, nil
+	return &Redis{client: client, prefix: keyPrefix}, nil
 }
 
-// Store saves an authorization code with its associated data.
-func (s *RedisAuthCodeStore) Store(code string, data *AuthCodeData) error {
-	ctx := context.Background()
-
-	// Serialize data to JSON
-	jsonData, err := json.Marshal(data)
+// Save stores data under code for AuthCodeTTL.
+func (s *Redis) Save(ctx context.Context, code string, data AuthCode) error {
+	value, err := json.Marshal(data)
 	if err != nil {
-		return fmt.Errorf("marshaling auth code data: %w", err)
+		return fmt.Errorf("encoding authorization code: %w", err)
 	}
-
-	key := s.prefix + code
-	if err := s.client.Set(ctx, key, jsonData, s.ttl).Err(); err != nil {
-		return fmt.Errorf("storing auth code: %w", err)
+	if err := s.client.Set(ctx, s.prefix+code, value, AuthCodeTTL).Err(); err != nil {
+		return fmt.Errorf("storing authorization code: %w", err)
 	}
-
 	return nil
 }
 
-// Get retrieves and deletes the data for an authorization code.
-// Returns nil if the code doesn't exist or has expired.
-func (s *RedisAuthCodeStore) Get(code string) (*AuthCodeData, error) {
-	ctx := context.Background()
-	key := s.prefix + code
-
-	// Get and delete atomically using GETDEL (Redis 6.2+)
-	jsonData, err := s.client.GetDel(ctx, key).Bytes()
-	if err == redis.Nil {
-		return nil, nil // Code doesn't exist
+// Consume atomically removes the code and returns its data, or ErrNotFound.
+func (s *Redis) Consume(ctx context.Context, code string) (AuthCode, error) {
+	value, err := s.client.GetDel(ctx, s.prefix+code).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return AuthCode{}, ErrNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("getting auth code: %w", err)
+		return AuthCode{}, fmt.Errorf("reading authorization code: %w", err)
 	}
-
-	var data AuthCodeData
-	if err := json.Unmarshal(jsonData, &data); err != nil {
-		return nil, fmt.Errorf("unmarshaling auth code data: %w", err)
+	var data AuthCode
+	if err := json.Unmarshal(value, &data); err != nil {
+		return AuthCode{}, fmt.Errorf("decoding authorization code: %w", err)
 	}
-
-	return &data, nil
+	return data, nil
 }
 
 // Close closes the Redis connection.
-func (s *RedisAuthCodeStore) Close() error {
+func (s *Redis) Close() error {
 	return s.client.Close()
 }

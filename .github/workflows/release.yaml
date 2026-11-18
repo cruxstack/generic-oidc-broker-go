@@ -1,7 +1,12 @@
 name: release
 
+# Tag a release only after CI has passed for a push to main.
 on:
-  push:
+  workflow_run:
+    workflows:
+      - ci
+    types:
+      - completed
     branches:
       - main
 
@@ -10,14 +15,18 @@ permissions:
 
 jobs:
   release:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
       - name: Bump Version
         id: tag_version
         uses: cruxstack/gh-create-semver-tag-action@81a68a34ab1fb48f4568ddd10e76caf9a608108e # v1.0.0
         with:
+          tag-target: ${{ github.event.workflow_run.head_sha }}
           bump-default: minor
           bump-rules: bug:patch:Fixes,chore:patch:Chores,docs:patch:Documentation,feat:minor:Features,refactor:minor:Refactors,test:patch:Tests,ci:patch:Development,dev:patch:Development
       - name: Create Release

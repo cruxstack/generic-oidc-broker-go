@@ -1,135 +1,76 @@
-.PHONY: all build dev test test-e2e test-e2e-external lint clean help demo demo-up demo-down demo-logs
+GO ?= go
+IMAGE ?= oidc-broker
+COMPOSE := docker compose -f demo/docker-compose.yml
 
-# Default target
-all: build
+.DEFAULT_GOAL := help
 
-# Build the binary
-build:
-	go build -o bin/broker ./cmd/broker
+.PHONY: help build run dev test check fmt fmt-check vet lint vuln tidy clean gen-key \
+	docker-build docker-run demo demo-up demo-down demo-logs demo-restart
 
-# Run in development mode with hot reload (requires air)
-dev:
-	@if command -v air > /dev/null; then \
-		air; \
-	else \
-		echo "air is not installed. Install with: go install github.com/air-verse/air@latest"; \
-		echo "Running without hot reload..."; \
-		go run ./cmd/broker; \
-	fi
+help: ## Show this help
+	@awk 'BEGIN {FS = ":.*## "} /^[a-z-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-# Run the server directly
-run:
-	go run ./cmd/broker
+build: ## Build the broker and mock provider into bin/
+	$(GO) build -trimpath -o bin/ ./cmd/...
 
-# Run all tests
-test:
-	go test ./...
+run: ## Run the broker (reads .env and .env.local)
+	$(GO) run ./cmd/broker
 
-# Run tests with verbose output
-test-v:
-	go test -v ./...
+dev: ## Run the broker with live reload (requires air)
+	@command -v air >/dev/null || { echo "air is not installed: https://github.com/air-verse/air"; exit 1; }
+	air
 
-# Run E2E tests
-test-e2e:
-	go test ./e2e/... -v -count=1
+test: ## Run all tests with the race detector
+	$(GO) test -race ./...
 
-# Run E2E tests against external server
-# Usage: E2E_SERVER_URL=http://localhost:3000 make test-e2e-external
-test-e2e-external:
-	go test ./e2e/... -v -count=1
+check: fmt-check vet test ## Run the checks CI runs
 
-# Run linter (requires golangci-lint)
-lint:
-	@if command -v golangci-lint > /dev/null; then \
-		golangci-lint run; \
-	else \
-		echo "golangci-lint is not installed. Install from https://golangci-lint.run/usage/install/"; \
-	fi
+fmt: ## Format the code
+	gofmt -w .
 
-# Format code
-fmt:
-	go fmt ./...
-	goimports -w .
+fmt-check: ## Fail if any file needs formatting
+	@unformatted="$$(gofmt -l .)"; if [ -n "$$unformatted" ]; then echo "Run 'make fmt':"; echo "$$unformatted"; exit 1; fi
 
-# Tidy dependencies
-tidy:
-	go mod tidy
+vet: ## Run go vet
+	$(GO) vet ./...
 
-# Clean build artifacts
-clean:
-	rm -rf bin/
-	rm -rf tmp/
+lint: ## Run golangci-lint (must be installed)
+	golangci-lint run
 
-# Generate test RSA key pair
-gen-test-key:
+vuln: ## Check dependencies for known vulnerabilities (must be installed)
+	govulncheck ./...
+
+tidy: ## Tidy go.mod and go.sum
+	$(GO) mod tidy
+
+clean: ## Remove build output
+	rm -rf bin/ tmp/
+
+gen-key: ## Generate a development signing key at testdata/private.pem
 	@mkdir -p testdata
-	openssl genrsa -out testdata/private.pem 2048
-	openssl rsa -in testdata/private.pem -pubout -out testdata/public.pem
-	@echo "Keys generated in testdata/"
+	openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out testdata/private.pem
+	@echo "Set APP_KEY_PRIVATE_PEM_PATH=testdata/private.pem"
 
-# Build Docker image
-docker-build:
-	docker build -t oidc-broker:latest .
+docker-build: ## Build the broker image
+	docker build -t $(IMAGE) .
 
-# Run Docker container
-docker-run:
-	docker run -p 3000:3000 --env-file .env oidc-broker:latest
+docker-run: ## Run the broker image with .env
+	docker run --rm -p 3000:3000 --env-file .env $(IMAGE)
 
-# Demo targets
-demo: demo-up
+demo: demo-up ## Start the offline demo
 	@echo ""
-	@echo "Demo is running!"
+	@echo "  Debug login:    http://localhost:3000/debug/login"
+	@echo "  Mock provider:  http://localhost:9999"
 	@echo ""
-	@echo "  OIDC Broker:      http://localhost:3000"
-	@echo "  Mock OAuth:       http://localhost:9999"
-	@echo "  Debug Login:      http://localhost:3000/debug/login"
-	@echo ""
-	@echo "Run 'make demo-logs' to see logs"
-	@echo "Run 'make demo-down' to stop"
+	@echo "  make demo-logs to follow logs, make demo-down to stop"
 
-demo-up:
-	@echo "Starting demo stack..."
-	docker compose -f demo/docker-compose.yml up --build -d
+demo-up: ## Start the demo containers
+	$(COMPOSE) up --build -d
 
-demo-down:
-	@echo "Stopping demo stack..."
-	docker compose -f demo/docker-compose.yml down -v
+demo-down: ## Stop the demo and remove its volumes
+	$(COMPOSE) down -v
 
-demo-logs:
-	docker compose -f demo/docker-compose.yml logs -f
+demo-logs: ## Follow the demo logs
+	$(COMPOSE) logs -f
 
-demo-restart: demo-down demo-up
-
-# Build mock provider binary locally
-build-mock-provider:
-	go build -o bin/mock-provider ./cmd/mock-provider
-
-# Run mock provider locally
-run-mock-provider:
-	go run ./cmd/mock-provider
-
-# Show help
-help:
-	@echo "Available targets:"
-	@echo "  build               - Build the binary"
-	@echo "  dev                 - Run with hot reload (requires air)"
-	@echo "  run                 - Run the server"
-	@echo "  test                - Run all unit tests"
-	@echo "  test-v              - Run tests with verbose output"
-	@echo "  test-e2e            - Run E2E tests"
-	@echo "  test-e2e-external   - Run E2E tests against external server (set E2E_SERVER_URL)"
-	@echo "  lint                - Run linter"
-	@echo "  fmt                 - Format code"
-	@echo "  tidy                - Tidy dependencies"
-	@echo "  clean               - Clean build artifacts"
-	@echo "  gen-test-key        - Generate test RSA key pair"
-	@echo "  docker-build        - Build Docker image"
-	@echo "  docker-run          - Run Docker container"
-	@echo "  demo                - Start the offline demo (docker compose)"
-	@echo "  demo-up             - Start demo containers"
-	@echo "  demo-down           - Stop demo containers"
-	@echo "  demo-logs           - View demo container logs"
-	@echo "  demo-restart        - Restart demo containers"
-	@echo "  build-mock-provider - Build mock provider binary"
-	@echo "  run-mock-provider   - Run mock provider locally"
-	@echo "  help                - Show this help"
+demo-restart: demo-down demo-up ## Restart the demo
