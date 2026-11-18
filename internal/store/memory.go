@@ -1,116 +1,70 @@
 package store
 
 import (
+	"context"
 	"sync"
 	"time"
-
-	"github.com/cruxstack/generic-oidc-broker/internal/provider"
 )
 
-// AuthCodeTTL is the time-to-live for authorization codes (10 minutes per OAuth 2.0 spec recommendation).
-const AuthCodeTTL = 10 * time.Minute
+// sweepInterval is how often Save removes expired codes from memory.
+const sweepInterval = time.Minute
 
-// AuthCodeCleanupInterval is how often expired codes are cleaned up from memory.
-const AuthCodeCleanupInterval = 1 * time.Minute
-
-// AuthCodeData holds the data associated with an authorization code.
-type AuthCodeData struct {
-	ClientID    string
-	RedirectURI string
-	Nonce       string
-	UserData    *provider.UserData
-	Scope       string
-	Issuer      string // Optional: provider-scoped issuer override
-	ExpiresAt   time.Time
+// Memory keeps authorization codes in process memory. Use it only when a
+// single broker instance serves all requests.
+type Memory struct {
+	mu        sync.Mutex
+	codes     map[string]memoryEntry
+	nextSweep time.Time
+	now       func() time.Time
 }
 
-// AuthCodeStore defines the interface for authorization code storage.
-type AuthCodeStore interface {
-	// Store saves an authorization code with its associated data.
-	Store(code string, data *AuthCodeData) error
-
-	// Get retrieves and deletes the data for an authorization code.
-	// Returns nil if the code doesn't exist or has expired.
-	Get(code string) (*AuthCodeData, error)
+type memoryEntry struct {
+	data      AuthCode
+	expiresAt time.Time
 }
 
-// MemoryAuthCodeStore is an in-memory implementation of AuthCodeStore.
-type MemoryAuthCodeStore struct {
-	mu     sync.RWMutex
-	codes  map[string]*AuthCodeData
-	stopCh chan struct{}
+// NewMemory returns an empty in-memory store.
+func NewMemory() *Memory {
+	return &Memory{codes: map[string]memoryEntry{}, now: time.Now}
 }
 
-// NewMemoryAuthCodeStore creates a new in-memory auth code store.
-func NewMemoryAuthCodeStore() *MemoryAuthCodeStore {
-	store := &MemoryAuthCodeStore{
-		codes:  make(map[string]*AuthCodeData),
-		stopCh: make(chan struct{}),
-	}
+// Save stores data under code for AuthCodeTTL.
+func (m *Memory) Save(_ context.Context, code string, data AuthCode) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	// Start cleanup goroutine
-	go store.cleanup()
-
-	return store
-}
-
-// Close stops the cleanup goroutine.
-func (s *MemoryAuthCodeStore) Close() error {
-	close(s.stopCh)
+	now := m.now()
+	m.sweepExpired(now)
+	m.codes[code] = memoryEntry{data: data, expiresAt: now.Add(AuthCodeTTL)}
 	return nil
 }
 
-// Store saves an authorization code with its associated data.
-func (s *MemoryAuthCodeStore) Store(code string, data *AuthCodeData) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// Consume removes the code and returns its data, or ErrNotFound.
+func (m *Memory) Consume(_ context.Context, code string) (AuthCode, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	data.ExpiresAt = time.Now().Add(AuthCodeTTL)
-	s.codes[code] = data
-
-	return nil
+	entry, ok := m.codes[code]
+	delete(m.codes, code)
+	if !ok || m.now().After(entry.expiresAt) {
+		return AuthCode{}, ErrNotFound
+	}
+	return entry.data, nil
 }
 
-// Get retrieves and deletes the data for an authorization code.
-// Returns nil if the code doesn't exist or has expired.
-func (s *MemoryAuthCodeStore) Get(code string) (*AuthCodeData, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// Close implements AuthCodes. It has nothing to release.
+func (m *Memory) Close() error { return nil }
 
-	data, exists := s.codes[code]
-	if !exists {
-		return nil, nil
+// sweepExpired drops expired codes at most once per sweepInterval, so that
+// codes which are never redeemed don't accumulate.
+func (m *Memory) sweepExpired(now time.Time) {
+	if now.Before(m.nextSweep) {
+		return
 	}
-
-	// Delete the code (single use)
-	delete(s.codes, code)
-
-	// Check if expired
-	if time.Now().After(data.ExpiresAt) {
-		return nil, nil
-	}
-
-	return data, nil
-}
-
-// cleanup periodically removes expired codes.
-func (s *MemoryAuthCodeStore) cleanup() {
-	ticker := time.NewTicker(AuthCodeCleanupInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-s.stopCh:
-			return
-		case <-ticker.C:
-			s.mu.Lock()
-			now := time.Now()
-			for code, data := range s.codes {
-				if now.After(data.ExpiresAt) {
-					delete(s.codes, code)
-				}
-			}
-			s.mu.Unlock()
+	for code, entry := range m.codes {
+		if now.After(entry.expiresAt) {
+			delete(m.codes, code)
 		}
 	}
+	m.nextSweep = now.Add(sweepInterval)
 }

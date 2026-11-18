@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mock {{.Provider}} sign-in</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 15px/1.5 system-ui, sans-serif; max-width: 420px; margin: 48px auto; padding: 0 16px; }
+    h1 { font-size: 20px; }
+    p { color: GrayText; }
+    button {
+      display: block; width: 100%; margin: 8px 0; padding: 12px; text-align: left;
+      font: inherit; border: 1px solid GrayText; border-radius: 6px; background: Canvas; color: CanvasText; cursor: pointer;
+    }
+    button:hover { border-color: Highlight; }
+    small { display: block; color: GrayText; }
+  </style>
+</head>
+<body>
+  <h1>Sign in to mock {{.Provider}}</h1>
+  <p>Choose a test account. This is a mock provider for development.</p>
+  <form method="post" action="/login">
+    <input type="hidden" name="login" value="{{.LoginID}}">
+    {{range .Users}}
+    <button type="submit" name="user_id" value="{{.ID}}">
+      {{.Name}} (@{{.Username}})
+      <small>{{.Email}}{{if not .EmailVerified}} (unverified){{end}}</small>
+    </button>
+    {{end}}
+  </form>
+</body>
+</html>

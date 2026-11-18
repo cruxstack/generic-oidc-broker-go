@@ -1,299 +1,216 @@
+// Package testutil runs the broker and the mock provider for end-to-end
+// tests.
 package testutil
 
 import (
 	"context"
-	"fmt"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
 	"log/slog"
-	"net"
 	"net/http"
-	"os"
-	"time"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
+	"testing"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	"github.com/lestrrat-go/jwx/v4/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwt"
+	"github.com/stretchr/testify/require"
 
+	"github.com/cruxstack/generic-oidc-broker/internal/app"
 	"github.com/cruxstack/generic-oidc-broker/internal/config"
-	"github.com/cruxstack/generic-oidc-broker/internal/handler"
-	appMiddleware "github.com/cruxstack/generic-oidc-broker/internal/middleware"
-	"github.com/cruxstack/generic-oidc-broker/internal/provider"
-	"github.com/cruxstack/generic-oidc-broker/internal/service"
-	"github.com/cruxstack/generic-oidc-broker/internal/store"
+	"github.com/cruxstack/generic-oidc-broker/internal/mockprovider"
 )
 
-// TestServer represents a test OIDC broker server.
-type TestServer struct {
-	Server      *http.Server
-	URL         string
-	Config      *config.Config
-	MockTwitter *MockTwitterServer
+// The OIDC client registered with every test broker.
+const (
+	ClientID     = "test-client"
+	ClientSecret = "test-secret"
+)
 
-	listener net.Listener
+// Server is a running broker whose providers are all backed by one mock
+// provider. Its providers are "twitter", "github", "google" and
+// "twitter-raw", a Twitter provider with unprefixed subjects.
+type Server struct {
+	// URL is the broker's base URL, which is also its issuer.
+	URL    string
+	Config *config.Config
 }
 
-// TestServerConfig holds configuration for creating a test server.
-type TestServerConfig struct {
-	// Port to listen on (0 for random)
-	Port int
+// Option adjusts a test broker's configuration.
+type Option func(*config.Config)
 
-	// OIDC clients to register
-	Clients []config.Client
+// NewServer starts a broker and a mock provider. Both are shut down when the
+// test ends.
+func NewServer(t testing.TB, opts ...Option) *Server {
+	t.Helper()
+	logger := slog.New(slog.DiscardHandler)
 
-	// Whether to start a mock Twitter server
-	UseMockTwitter bool
+	mock := httptest.NewServer(mockprovider.New(logger, mockprovider.DefaultUsers).Handler())
+	t.Cleanup(mock.Close)
 
-	// Custom issuer URL (defaults to http://localhost:{port})
-	Issuer string
-}
-
-// NewTestServer creates and starts a new test OIDC broker server.
-func NewTestServer(cfg *TestServerConfig) (*TestServer, error) {
-	if cfg == nil {
-		cfg = &TestServerConfig{}
-	}
-
-	// Generate test keys if needed
-	keyPair, err := GenerateTestKeyPair(DefaultTestKeyID)
-	if err != nil {
-		return nil, fmt.Errorf("generating test keys: %w", err)
-	}
-
-	// Find available port
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Port))
-	if err != nil {
-		return nil, fmt.Errorf("creating listener: %w", err)
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-
-	// Create mock Twitter server if requested
-	var mockTwitter *MockTwitterServer
-	twitterAuthURL := provider.TwitterDefaultAuthURL
-	twitterTokenURL := provider.TwitterDefaultTokenURL
-	twitterUserURL := provider.TwitterDefaultUserURL
-
-	if cfg.UseMockTwitter {
-		mockTwitter = NewMockTwitterServer()
-		twitterAuthURL = mockTwitter.AuthURL()
-		twitterTokenURL = mockTwitter.TokenURL()
-		twitterUserURL = mockTwitter.UserURL()
-
-		// Set default mock user
-		mockTwitter.SetDefaultUser(&MockTwitterUser{
-			ID:              "12345",
-			Name:            "Test User",
-			Username:        "testuser",
-			ProfileImageURL: "https://example.com/avatar.jpg",
-		})
-	}
-
-	issuer := cfg.Issuer
-	if issuer == "" {
-		issuer = fmt.Sprintf("http://localhost:%d", port)
-	}
-
-	// Set default clients if none provided
-	clients := cfg.Clients
-	if len(clients) == 0 {
-		clients = []config.Client{
-			{
-				ClientID:     "test-client",
-				ClientSecret: "test-secret",
-				RedirectURIs: []string{
-					fmt.Sprintf("http://localhost:%d/callback", port),
-					fmt.Sprintf("http://localhost:%d/debug/callback", port),
-				},
-			},
-		}
-	}
-
-	// Create config with providers
-	appCfg := &config.Config{
-		Port: port,
-
-		// Provider config
-		Providers: []config.ProviderConfig{
-			{
-				Name:          "twitter",
-				ClientID:      "mock-twitter-client",
-				ClientSecret:  "mock-twitter-secret",
-				CallbackURL:   fmt.Sprintf("http://localhost:%d/auth/twitter/callback", port),
-				AuthURL:       twitterAuthURL,
-				TokenURL:      twitterTokenURL,
-				UserURL:       twitterUserURL,
-				PrefixSubject: ptrBool(true), // Use prefixed subjects by default (e.g., "twitter:12345")
-			},
+	broker := httptest.NewUnstartedServer(nil)
+	base := "http://" + broker.Listener.Addr().String()
+	unprefixed := false
+	cfg := &config.Config{
+		Port:   3000,
+		Issuer: base,
+		Clients: []config.Client{{
+			ClientID:     ClientID,
+			ClientSecret: ClientSecret,
+			RedirectURIs: []string{base + "/callback", base + "/debug/callback"},
+		}},
+		Providers: []config.Provider{
+			mockProviderConfig("twitter", "twitter", base, mock.URL),
+			mockProviderConfig("github", "github", base, mock.URL),
+			mockProviderConfig("google", "google", base, mock.URL),
+			mockProviderConfig("twitter-raw", "twitter", base, mock.URL),
 		},
-
-		OIDCIssuer:  issuer,
-		OIDCClients: clients,
-
-		KeyID:         keyPair.KeyID,
-		KeyPrivatePEM: keyPair.PrivatePEM,
-
-		SessionSecret: "test-session-secret",
-
-		DebugEnabled: true,
-		DebugBaseURL: issuer,
+		SigningKeyID:  "test-key",
+		SigningKeyPEM: signingKeyPEM(t),
+		SessionSecret: strings.Repeat("s", config.MinSessionSecretLength),
+		Debug: config.Debug{
+			Enabled:      true,
+			BaseURL:      base,
+			ClientID:     ClientID,
+			ClientSecret: ClientSecret,
+		},
+	}
+	cfg.Providers[3].PrefixSubject = &unprefixed
+	for _, opt := range opts {
+		opt(cfg)
 	}
 
-	// Create logger (quiet for tests)
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelError,
-	}))
-
-	// Initialize provider registry
-	providerRegistry := provider.NewRegistry()
-	providerRegistry.RegisterFactory("twitter", provider.TwitterProviderFactory)
-	providerRegistry.RegisterFactory("github", provider.GitHubProviderFactory)
-	providerRegistry.RegisterFactory("google", provider.GoogleProviderFactory)
-
-	// Create providers from configuration
-	for _, provCfg := range appCfg.Providers {
-		err := providerRegistry.CreateFromConfig(provider.Config{
-			Name:         provCfg.Name,
-			ClientID:     provCfg.ClientID,
-			ClientSecret: provCfg.ClientSecret,
-			CallbackURL:  provCfg.CallbackURL,
-			AuthURL:      provCfg.AuthURL,
-			TokenURL:     provCfg.TokenURL,
-			UserURL:      provCfg.UserURL,
-			Scopes:       provCfg.Scopes,
-		})
-		if err != nil {
-			listener.Close()
-			if mockTwitter != nil {
-				mockTwitter.Close()
-			}
-			return nil, fmt.Errorf("creating provider %s: %w", provCfg.Name, err)
-		}
-	}
-
-	// Initialize stores
-	authCodeStore := store.NewMemoryAuthCodeStore()
-
-	// Initialize services
-	tokenService, err := service.NewTokenService(appCfg, logger)
-	if err != nil {
-		listener.Close()
-		if mockTwitter != nil {
-			mockTwitter.Close()
-		}
-		return nil, fmt.Errorf("creating token service: %w", err)
-	}
-
-	clientService := service.NewClientService(appCfg)
-
-	// Initialize handlers
-	handlers := handler.NewHandlers(appCfg, tokenService, clientService, authCodeStore, providerRegistry, logger)
-
-	// Setup router
-	r := chi.NewRouter()
-	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
-	r.Use(middleware.Recoverer)
-
-	// Session middleware
-	sessionStore, err := appMiddleware.NewSessionStore(appCfg)
-	if err != nil {
-		listener.Close()
-		if mockTwitter != nil {
-			mockTwitter.Close()
-		}
-		return nil, fmt.Errorf("creating session store: %w", err)
-	}
-	r.Use(appMiddleware.Session(sessionStore, appCfg))
-
-	// Provider-scoped OIDC endpoints
-	// Each provider has its own issuer: {base_issuer}/providers/{provider_name}
-	r.Get("/providers/{provider}/.well-known/openid-configuration", handlers.ProviderDiscovery)
-	r.Get("/providers/{provider}/.well-known/jwks.json", handlers.ProviderJWKS)
-	r.Get("/providers/{provider}/authorize", handlers.ProviderAuthorize)
-	r.Post("/providers/{provider}/token", handlers.ProviderToken)
-	r.Get("/providers/{provider}/userinfo", handlers.ProviderUserinfo)
-
-	// OAuth provider routes - dynamic based on registered providers
-	r.Get("/auth/{provider}", handlers.OAuthStart)
-	r.Get("/auth/{provider}/callback", handlers.OAuthCallback)
-
-	// Debug routes
-	r.Get("/debug/login", handlers.DebugLogin)
-	r.Get("/debug/callback", handlers.DebugCallback)
-
-	// Health check
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+	a, err := app.New(context.Background(), cfg, logger)
+	require.NoError(t, err)
+	broker.Config.Handler = a.Handler
+	broker.Start()
+	t.Cleanup(func() {
+		broker.Close()
+		_ = a.Close()
 	})
-
-	srv := &http.Server{
-		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-	}
-
-	ts := &TestServer{
-		Server:      srv,
-		URL:         fmt.Sprintf("http://localhost:%d", port),
-		Config:      appCfg,
-		MockTwitter: mockTwitter,
-		listener:    listener,
-	}
-
-	// Start server in background
-	go func() {
-		if err := srv.Serve(listener); err != http.ErrServerClosed {
-			// Log error but don't panic - test will handle it
-		}
-	}()
-
-	// Wait for server to be ready
-	if err := ts.waitForReady(5 * time.Second); err != nil {
-		ts.Close()
-		return nil, err
-	}
-
-	return ts, nil
+	return &Server{URL: base, Config: cfg}
 }
 
-// Close shuts down the test server.
-func (ts *TestServer) Close() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if ts.MockTwitter != nil {
-		ts.MockTwitter.Close()
+// mockProviderConfig configures provider name of type kind to use the mock.
+func mockProviderConfig(name, kind, base, mockURL string) config.Provider {
+	userPath := map[string]string{
+		"twitter": "/twitter/user",
+		"github":  "/github/user",
+		"google":  "/google/userinfo",
+	}[kind]
+	return config.Provider{
+		Name:         name,
+		Type:         kind,
+		ClientID:     name + "-client",
+		ClientSecret: name + "-secret",
+		CallbackURL:  base + "/auth/" + name + "/callback",
+		AuthURL:      mockURL + "/" + kind + "/authorize",
+		TokenURL:     mockURL + "/" + kind + "/token",
+		UserURL:      mockURL + userPath,
 	}
-
-	return ts.Server.Shutdown(ctx)
 }
 
-// waitForReady waits for the server to be ready to accept connections.
-func (ts *TestServer) waitForReady(timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		resp, err := http.Get(ts.URL + "/health")
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return nil
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
+// signingKeyPEM returns an RSA key shared by all tests, since generating one
+// is slow.
+var signingKeyPEM = func() func(testing.TB) []byte {
+	var once sync.Once
+	var keyPEM []byte
+	return func(t testing.TB) []byte {
+		once.Do(func() {
+			key, err := rsa.GenerateKey(rand.Reader, 2048)
+			require.NoError(t, err)
+			der, err := x509.MarshalPKCS8PrivateKey(key)
+			require.NoError(t, err)
+			keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+		})
+		return keyPEM
 	}
-	return fmt.Errorf("server not ready after %v", timeout)
+}()
+
+// Issuer returns the issuer URL of a provider.
+func (s *Server) Issuer(provider string) string {
+	return s.Config.ProviderIssuer(provider)
 }
 
-// ExternalServerURL returns the URL of an external server to test against.
-// This is set via the E2E_SERVER_URL environment variable.
-func ExternalServerURL() string {
-	return os.Getenv("E2E_SERVER_URL")
+// AuthParams returns a valid authorization request for the test client.
+func (s *Server) AuthParams() url.Values {
+	return url.Values{
+		"client_id":     {ClientID},
+		"redirect_uri":  {s.URL + "/callback"},
+		"response_type": {"code"},
+		"scope":         {"openid profile email"},
+		"state":         {"client-state"},
+		"nonce":         {"client-nonce"},
+	}
 }
 
-// UseExternalServer returns true if we should test against an external server.
-func UseExternalServer() bool {
-	return ExternalServerURL() != ""
+// TokenForm returns a valid token request for code, authenticating with
+// client_secret_post.
+func (s *Server) TokenForm(code string) url.Values {
+	return url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {s.URL + "/callback"},
+		"client_id":     {ClientID},
+		"client_secret": {ClientSecret},
+	}
 }
 
-// ptrBool returns a pointer to the given bool value.
-func ptrBool(b bool) *bool {
-	return &b
+// RequestToken posts form to a provider's token endpoint and returns the
+// response with its JSON body decoded.
+func (s *Server) RequestToken(t testing.TB, provider string, form url.Values) (*http.Response, map[string]any) {
+	t.Helper()
+	resp, err := http.PostForm(s.Issuer(provider)+"/token", form)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	return resp, body
+}
+
+// RedeemCode exchanges code for tokens and fails the test unless it succeeds.
+func (s *Server) RedeemCode(t testing.TB, provider, code string) (idToken, accessToken string) {
+	t.Helper()
+	resp, body := s.RequestToken(t, provider, s.TokenForm(code))
+	require.Equal(t, http.StatusOK, resp.StatusCode, "token response: %v", body)
+	return body["id_token"].(string), body["access_token"].(string)
+}
+
+// VerifyIDToken checks an ID token's signature against the provider's
+// published keys, its issuer and its audience, and returns its claims.
+func (s *Server) VerifyIDToken(t testing.TB, provider, raw string) map[string]any {
+	t.Helper()
+	resp, err := http.Get(s.Issuer(provider) + "/.well-known/jwks.json")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	var rawSet json.RawMessage
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&rawSet))
+	keys, err := jwk.Parse(rawSet)
+	require.NoError(t, err)
+
+	_, err = jwt.Parse([]byte(raw),
+		jwt.WithKeySet(keys),
+		jwt.WithIssuer(s.Issuer(provider)),
+		jwt.WithAudience(ClientID),
+	)
+	require.NoError(t, err, "ID token verification")
+	return Claims(t, raw)
+}
+
+// Claims decodes a JWT's claims without verifying it.
+func Claims(t testing.TB, raw string) map[string]any {
+	t.Helper()
+	parts := strings.Split(raw, ".")
+	require.Len(t, parts, 3, "JWT must have three parts")
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	require.NoError(t, err)
+	var claims map[string]any
+	require.NoError(t, json.Unmarshal(payload, &claims))
+	return claims
 }

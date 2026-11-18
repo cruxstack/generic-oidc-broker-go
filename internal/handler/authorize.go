@@ -1,179 +1,220 @@
 package handler
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
+	"time"
 
-	"github.com/cruxstack/generic-oidc-broker/internal/middleware"
-	"github.com/go-chi/chi/v5"
+	"golang.org/x/oauth2"
 )
 
-// authorizeParams holds parsed authorization request parameters.
-type authorizeParams struct {
-	ClientID     string
-	RedirectURI  string
-	ResponseType string
-	State        string
-	Nonce        string
-	Scope        string
+// maxParamLength bounds state and nonce, which are stored in the flow cookie.
+const maxParamLength = 512
+
+// supportedScopes are the scopes the broker understands. Others are ignored,
+// as RFC 6749 §3.3 allows.
+var supportedScopes = []string{"openid", "profile", "email"}
+
+// responseType is a supported OIDC response_type: "code", "id_token" or
+// "code id_token". Response types that return an access token from the
+// authorization endpoint are not supported, following the OAuth 2.0
+// Security Best Current Practice (RFC 9700 §2.1.2).
+type responseType struct {
+	Code    bool `json:"code"`
+	IDToken bool `json:"id_token"`
 }
 
-// parseAuthorizeParams extracts and validates common authorization parameters.
-func (h *Handlers) parseAuthorizeParams(r *http.Request) *authorizeParams {
-	return &authorizeParams{
-		ClientID:     r.URL.Query().Get("client_id"),
-		RedirectURI:  r.URL.Query().Get("redirect_uri"),
-		ResponseType: r.URL.Query().Get("response_type"),
-		State:        r.URL.Query().Get("state"),
-		Nonce:        r.URL.Query().Get("nonce"),
-		Scope:        r.URL.Query().Get("scope"),
-	}
-}
-
-// validateAuthorizeParams validates authorization parameters and returns an error response if invalid.
-// Returns true if validation passed, false if an error response was sent.
-func (h *Handlers) validateAuthorizeParams(w http.ResponseWriter, r *http.Request, params *authorizeParams) bool {
-	// Validate required parameters
-	if params.ClientID == "" {
-		h.authorizeError(w, r, params.RedirectURI, params.State, "invalid_request", "Missing client_id parameter")
-		return false
-	}
-
-	if params.RedirectURI == "" {
-		h.authorizeError(w, r, "", params.State, "invalid_request", "Missing redirect_uri parameter")
-		return false
-	}
-
-	if params.ResponseType == "" {
-		h.authorizeError(w, r, params.RedirectURI, params.State, "invalid_request", "Missing response_type parameter")
-		return false
-	}
-
-	// Validate client
-	client := h.clientService.GetClient(params.ClientID)
-	if client == nil {
-		h.authorizeError(w, r, params.RedirectURI, params.State, "unauthorized_client", "Unknown client")
-		return false
-	}
-
-	// Validate redirect URI
-	if !h.clientService.ValidateRedirectURI(params.ClientID, params.RedirectURI) {
-		h.authorizeError(w, r, "", params.State, "invalid_request", "Invalid redirect_uri")
-		return false
-	}
-
-	// Validate response type
-	if !validResponseTypes[params.ResponseType] {
-		h.authorizeError(w, r, params.RedirectURI, params.State, "unsupported_response_type", "Unsupported response_type")
-		return false
-	}
-
-	return true
-}
-
-// storeAuthorizeSession stores authorization parameters in the session.
-func (h *Handlers) storeAuthorizeSession(r *http.Request, w http.ResponseWriter, params *authorizeParams, issuer string) {
-	session := middleware.GetSession(r)
-	if session != nil {
-		session.Values[middleware.SessionKeyClientID] = params.ClientID
-		session.Values[middleware.SessionKeyRedirectURI] = params.RedirectURI
-		session.Values[middleware.SessionKeyResponseType] = params.ResponseType
-		session.Values[middleware.SessionKeyState] = params.State
-		session.Values[middleware.SessionKeyNonce] = params.Nonce
-		session.Values[middleware.SessionKeyScope] = params.Scope
-		if issuer != "" {
-			session.Values[middleware.SessionKeyIssuer] = issuer
-		}
-		if err := middleware.SaveSession(r, w); err != nil {
-			h.logger.Error("failed to save session", "error", err)
+// parseResponseType parses a space-separated response_type in any order.
+func parseResponseType(raw string) (responseType, bool) {
+	var rt responseType
+	for value := range strings.FieldsSeq(raw) {
+		switch {
+		case value == "code" && !rt.Code:
+			rt.Code = true
+		case value == "id_token" && !rt.IDToken:
+			rt.IDToken = true
+		default:
+			return responseType{}, false
 		}
 	}
+	return rt, rt.Code || rt.IDToken
 }
 
-// ProviderAuthorize handles GET /providers/{provider}/authorize.
-// This is the provider-scoped OIDC authorization endpoint.
-func (h *Handlers) ProviderAuthorize(w http.ResponseWriter, r *http.Request) {
-	providerName := chi.URLParam(r, "provider")
+// authorizationRequest is a validated authorization request, kept in the
+// flow cookie while the user signs in at the provider.
+type authorizationRequest struct {
+	Provider      string       `json:"provider"`
+	ClientID      string       `json:"client_id"`
+	RedirectURI   string       `json:"redirect_uri"`
+	ResponseType  responseType `json:"response_type"`
+	Scope         string       `json:"scope"`
+	State         string       `json:"state,omitempty"`
+	Nonce         string       `json:"nonce,omitempty"`
+	CodeChallenge string       `json:"code_challenge,omitempty"`
+	// ProviderVerifier is the PKCE verifier for the broker's own
+	// authorization request to the provider.
+	ProviderVerifier string    `json:"provider_verifier"`
+	CreatedAt        time.Time `json:"created_at"`
+}
 
-	// Validate provider exists
-	if h.providerRegistry.Get(providerName) == nil {
-		http.Error(w, "Unknown provider", http.StatusNotFound)
+// Authorize handles GET /providers/{provider}/authorize. It validates the
+// client's request and sends the user to the provider to sign in.
+func (h *Handler) Authorize(w http.ResponseWriter, r *http.Request) {
+	p := providerFrom(r)
+	query := r.URL.Query()
+
+	// Until the client and redirect URI are known to be valid, errors are
+	// shown to the user and never redirected (RFC 6749 §4.1.2.1).
+	client, ok := h.cfg.Client(query.Get("client_id"))
+	if !ok {
+		renderError(w, http.StatusBadRequest, "The client_id is missing or unknown.")
+		return
+	}
+	redirectURI := query.Get("redirect_uri")
+	if !client.AllowsRedirectURI(redirectURI) {
+		renderError(w, http.StatusBadRequest, "The redirect_uri is missing or not registered for this client.")
 		return
 	}
 
-	params := h.parseAuthorizeParams(r)
-
-	if !h.validateAuthorizeParams(w, r, params) {
+	rt, ok := parseResponseType(query.Get("response_type"))
+	reply := authorizationReply{
+		redirectURI: redirectURI,
+		state:       query.Get("state"),
+		issuer:      h.issuerFor(r),
+		fragment:    rt.IDToken,
+	}
+	if !ok {
+		reply.sendError(w, r, "unsupported_response_type", "response_type must be code, id_token or code id_token")
 		return
 	}
 
-	// Store authorization parameters in session with provider-scoped issuer
-	h.storeAuthorizeSession(r, w, params, h.cfg.ProviderIssuer(providerName))
+	req := authorizationRequest{
+		Provider:     p.Name(),
+		ClientID:     client.ClientID,
+		RedirectURI:  redirectURI,
+		ResponseType: rt,
+	}
+	if err := readAuthorizationParams(query, &req); err != nil {
+		reply.sendError(w, r, err.code, err.description)
+		return
+	}
 
-	// Redirect to OAuth provider authentication
-	http.Redirect(w, r, "/auth/"+providerName, http.StatusFound)
+	state, verifier := rand.Text(), oauth2.GenerateVerifier()
+	req.ProviderVerifier = verifier
+	req.CreatedAt = h.flows.now()
+	if err := h.flows.add(w, r, state, req); err != nil {
+		h.logger.Error("saving sign-in cookie", "error", err)
+		reply.sendError(w, r, "server_error", "could not start sign-in")
+		return
+	}
+
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, p.AuthCodeURL(state, verifier), http.StatusFound)
 }
 
-// authorizeError sends an error response for the authorize endpoint.
-func (h *Handlers) authorizeError(w http.ResponseWriter, r *http.Request, redirectURI, state, errorCode, errorDescription string) {
-	// If we have a valid redirect URI, redirect with error parameters
-	if redirectURI != "" {
-		u, err := url.Parse(redirectURI)
-		if err == nil {
-			q := u.Query()
-			q.Set("error", errorCode)
-			q.Set("error_description", errorDescription)
-			if state != "" {
-				q.Set("state", state)
-			}
-			u.RawQuery = q.Encode()
-			http.Redirect(w, r, u.String(), http.StatusFound)
-			return
+// readAuthorizationParams validates and copies the request parameters other
+// than client_id, redirect_uri and response_type into req.
+func readAuthorizationParams(query url.Values, req *authorizationRequest) *oauthError {
+	scope, ok := normalizeScope(query.Get("scope"))
+	if !ok {
+		return &oauthError{"invalid_scope", "scope must include openid"}
+	}
+	req.Scope = scope
+
+	req.State, req.Nonce = query.Get("state"), query.Get("nonce")
+	if len(req.State) > maxParamLength || len(req.Nonce) > maxParamLength {
+		return &oauthError{"invalid_request", "state and nonce must be at most 512 characters"}
+	}
+	// OIDC Core §3.2.2.1 and §3.3.2.11.
+	if req.ResponseType.IDToken && req.Nonce == "" {
+		return &oauthError{"invalid_request", "nonce is required when response_type includes id_token"}
+	}
+
+	challenge, method := query.Get("code_challenge"), query.Get("code_challenge_method")
+	switch {
+	case challenge == "" && method == "":
+		// The client is not using PKCE.
+	case challenge == "":
+		return &oauthError{"invalid_request", "code_challenge_method requires code_challenge"}
+	case method != "S256":
+		return &oauthError{"invalid_request", "code_challenge_method must be S256"}
+	case !isS256Challenge(challenge):
+		return &oauthError{"invalid_request", "code_challenge must be a base64url-encoded SHA-256 hash"}
+	}
+	req.CodeChallenge = challenge
+	return nil
+}
+
+// normalizeScope keeps the supported scopes in the order requested, without
+// duplicates, and reports whether openid is among them.
+func normalizeScope(raw string) (string, bool) {
+	var kept []string
+	for scope := range strings.FieldsSeq(raw) {
+		if slices.Contains(supportedScopes, scope) && !slices.Contains(kept, scope) {
+			kept = append(kept, scope)
 		}
 	}
-
-	// Otherwise, return an error page
-	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(http.StatusBadRequest)
-	if _, err := w.Write([]byte(errorCode + ": " + errorDescription)); err != nil {
-		h.logger.Error("failed to write error response", "error", err)
-	}
+	return strings.Join(kept, " "), slices.Contains(kept, "openid")
 }
 
-// buildRedirectURL constructs the redirect URL with authorization response parameters.
-func buildRedirectURL(baseURI, responseType, code, idToken, accessToken, state string) (string, error) {
-	u, err := url.Parse(baseURI)
-	if err != nil {
-		return "", err
+// isS256Challenge reports whether challenge has the form of an RFC 7636 S256
+// code challenge: an unpadded base64url-encoded SHA-256 hash.
+func isS256Challenge(challenge string) bool {
+	hash, err := base64.RawURLEncoding.DecodeString(challenge)
+	return err == nil && len(hash) == 32
+}
+
+// oauthError is an OAuth 2.0 error code and description.
+type oauthError struct {
+	code        string
+	description string
+}
+
+// authorizationReply sends authorization responses and errors to a
+// client's redirect URI, which must already be validated.
+type authorizationReply struct {
+	redirectURI string
+	state       string
+	// issuer is returned as the iss parameter (RFC 9207) so that clients of
+	// several providers can tell which issuer responded.
+	issuer string
+	// fragment returns parameters in the URL fragment, which OIDC Core
+	// §3.3.2.5 requires for responses that include an ID token.
+	fragment bool
+}
+
+func (a authorizationReply) send(w http.ResponseWriter, r *http.Request, params url.Values) {
+	params.Set("iss", a.issuer)
+	if a.state != "" {
+		params.Set("state", a.state)
 	}
 
-	// Determine if we should use fragment or query parameters
-	// Fragment is used for implicit flow (id_token, token)
-	useFragment := strings.Contains(responseType, "id_token") ||
-		(strings.Contains(responseType, "token") && !strings.Contains(responseType, "code"))
-
-	params := url.Values{}
-	if code != "" {
-		params.Set("code", code)
+	target, err := url.Parse(a.redirectURI)
+	if err != nil { // registered redirect URIs are validated at startup
+		renderError(w, http.StatusInternalServerError, "The client's redirect URI is invalid.")
+		return
 	}
-	if idToken != "" {
-		params.Set("id_token", idToken)
-	}
-	if accessToken != "" {
-		params.Set("access_token", accessToken)
-		params.Set("token_type", "Bearer")
-		params.Set("expires_in", "3600")
-	}
-	if state != "" {
-		params.Set("state", state)
-	}
-
-	if useFragment {
-		u.Fragment = params.Encode()
+	location := ""
+	if a.fragment {
+		target.Fragment, target.RawFragment = "", ""
+		location = target.String() + "#" + params.Encode()
 	} else {
-		u.RawQuery = params.Encode()
+		query := target.Query()
+		for name, values := range params {
+			query[name] = values
+		}
+		target.RawQuery = query.Encode()
+		location = target.String()
 	}
 
-	return u.String(), nil
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, location, http.StatusFound)
+}
+
+func (a authorizationReply) sendError(w http.ResponseWriter, r *http.Request, code, description string) {
+	a.send(w, r, url.Values{"error": {code}, "error_description": {description}})
 }

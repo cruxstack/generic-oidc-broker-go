@@ -11,97 +11,91 @@ import (
 	"github.com/cruxstack/generic-oidc-broker/e2e/testutil"
 )
 
-func TestUserinfoEndpoint_ValidToken(t *testing.T) {
-	ts := getTestServer(t)
-
-	// Get tokens through the full flow
-	code := performAuthorizationFlow(t, ts)
-	accessToken := exchangeCodeForToken(t, ts, code)
-
-	// Call userinfo endpoint
-	client := testutil.NewTestClient(ts.URL)
-	resp, err := client.GetWithAuth("/providers/twitter/userinfo", accessToken)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
-
-	var userinfo map[string]interface{}
-	err = json.NewDecoder(resp.Body).Decode(&userinfo)
-	require.NoError(t, err)
-
-	// Verify required claims
-	assert.NotEmpty(t, userinfo["sub"], "sub claim should be present")
+type userinfoResponse struct {
+	*http.Response
+	claims map[string]any
 }
 
-func TestUserinfoEndpoint_MissingToken(t *testing.T) {
-	ts := getTestServer(t)
-	client := testutil.NewTestClient(ts.URL)
-
-	resp, err := client.Get("/providers/twitter/userinfo")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-
-	// Should have WWW-Authenticate header
-	wwwAuth := resp.Header.Get("WWW-Authenticate")
-	assert.Contains(t, wwwAuth, "Bearer")
+// userinfo calls a provider's userinfo endpoint with a bearer token.
+func userinfo(t *testing.T, s *testutil.Server, provider, bearer string) userinfoResponse {
+	t.Helper()
+	return userinfoWithMethod(t, s, provider, http.MethodGet, bearer)
 }
 
-func TestUserinfoEndpoint_InvalidToken(t *testing.T) {
-	ts := getTestServer(t)
-	client := testutil.NewTestClient(ts.URL)
-
-	resp, err := client.GetWithAuth("/providers/twitter/userinfo", "invalid-token-12345")
+func userinfoWithMethod(t *testing.T, s *testutil.Server, provider, method, bearer string) userinfoResponse {
+	t.Helper()
+	req, err := http.NewRequest(method, s.Issuer(provider)+"/userinfo", nil)
 	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-
-	// Should have WWW-Authenticate header with error
-	wwwAuth := resp.Header.Get("WWW-Authenticate")
-	assert.Contains(t, wwwAuth, "Bearer")
-	assert.Contains(t, wwwAuth, "invalid_token")
-}
-
-func TestUserinfoEndpoint_MalformedAuthHeader(t *testing.T) {
-	ts := getTestServer(t)
-
-	// Create a custom request with malformed auth header
-	req, err := http.NewRequest(http.MethodGet, ts.URL+"/providers/twitter/userinfo", nil)
-	require.NoError(t, err)
-	req.Header.Set("Authorization", "NotBearer token123")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-}
-
-// exchangeCodeForToken exchanges an authorization code for an access token.
-func exchangeCodeForToken(t *testing.T, ts *testutil.TestServer, code string) string {
-	client := testutil.NewTestClient(ts.URL)
-	tokenParams := &testutil.TokenParams{
-		GrantType:    "authorization_code",
-		Code:         code,
-		RedirectURI:  ts.URL + "/callback",
-		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
-
-	resp, err := client.PostForm("/providers/twitter/token", tokenParams.ToFormValues())
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	require.Equal(t, http.StatusOK, resp.StatusCode)
+	result := userinfoResponse{Response: resp}
+	if resp.StatusCode == http.StatusOK {
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&result.claims))
+	}
+	return result
+}
 
-	var tokenResp map[string]interface{}
-	err = json.NewDecoder(resp.Body).Decode(&tokenResp)
-	require.NoError(t, err)
+// signIn returns tokens for user 1001 at provider.
+func signIn(t *testing.T, s *testutil.Server, provider string) (idToken, accessToken string) {
+	t.Helper()
+	return s.RedeemCode(t, provider, newCode(t, s, provider, s.AuthParams()))
+}
 
-	return tokenResp["access_token"].(string)
+func TestUserinfo_GETAndPOST(t *testing.T) {
+	s := testutil.NewServer(t)
+	_, accessToken := signIn(t, s, "google")
+
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		resp := userinfoWithMethod(t, s, "google", method, accessToken)
+		require.Equal(t, http.StatusOK, resp.StatusCode, method)
+		assert.Equal(t, "google:1001", resp.claims["sub"])
+		assert.Equal(t, "alice@example.com", resp.claims["email"])
+		assert.Equal(t, "no-store", resp.Header.Get("Cache-Control"))
+	}
+}
+
+func TestUserinfo_WithoutToken(t *testing.T) {
+	s := testutil.NewServer(t)
+
+	resp := userinfo(t, s, "github", "")
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.Equal(t, `Bearer realm="oidc-broker"`, resp.Header.Get("WWW-Authenticate"))
+}
+
+func TestUserinfo_RejectsInvalidTokens(t *testing.T) {
+	s := testutil.NewServer(t)
+	idToken, accessToken := signIn(t, s, "github")
+
+	tests := map[string]struct{ provider, token string }{
+		"garbage":                    {"github", "not-a-jwt"},
+		"ID token":                   {"github", idToken},
+		"tampered signature":         {"github", accessToken[:len(accessToken)-4] + "AAAA"},
+		"token for google issuer":    {"google", accessToken},
+		"token for twitter issuer":   {"twitter", accessToken},
+		"token for unprefixed alias": {"twitter-raw", accessToken},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			resp := userinfo(t, s, tt.provider, tt.token)
+			assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+			assert.Contains(t, resp.Header.Get("WWW-Authenticate"), `error="invalid_token"`)
+		})
+	}
+}
+
+func TestUserinfo_RateLimited(t *testing.T) {
+	s := testutil.NewServer(t)
+
+	for i := range 100 {
+		resp := userinfo(t, s, "github", "invalid")
+		require.Equal(t, http.StatusUnauthorized, resp.StatusCode, "request %d", i+1)
+	}
+	resp := userinfo(t, s, "github", "invalid")
+	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
+	assert.NotEmpty(t, resp.Header.Get("Retry-After"))
 }

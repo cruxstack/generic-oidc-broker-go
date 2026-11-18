@@ -1,119 +1,143 @@
 package middleware
 
 import (
+	"math"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
+
+	chimw "github.com/go-chi/chi/v5/middleware"
 )
 
-// RateLimiter implements a simple token bucket rate limiter.
-type RateLimiter struct {
-	mu       sync.Mutex
-	buckets  map[string]*bucket
-	rate     int           // requests per window
-	window   time.Duration // time window
-	cleanupT *time.Ticker
+// Limiter is a fixed-window rate limiter: each key may record up to limit
+// events per window. It is safe for concurrent use.
+type Limiter struct {
+	mu        sync.Mutex
+	limit     int
+	window    time.Duration
+	windows   map[string]*fixedWindow
+	nextSweep time.Time
+	now       func() time.Time
 }
 
-type bucket struct {
-	tokens    int
-	lastReset time.Time
+type fixedWindow struct {
+	start time.Time
+	count int
 }
 
-// NewRateLimiter creates a new rate limiter.
-// rate is the number of requests allowed per window duration.
-func NewRateLimiter(rate int, window time.Duration) *RateLimiter {
-	rl := &RateLimiter{
-		buckets:  make(map[string]*bucket),
-		rate:     rate,
-		window:   window,
-		cleanupT: time.NewTicker(window),
+// NewLimiter returns a limiter allowing limit events per key per window.
+func NewLimiter(limit int, window time.Duration) *Limiter {
+	return &Limiter{
+		limit:   limit,
+		window:  window,
+		windows: map[string]*fixedWindow{},
+		now:     time.Now,
 	}
-
-	// Start cleanup goroutine
-	go rl.cleanup()
-
-	return rl
 }
 
-// Allow checks if a request from the given key should be allowed.
-func (rl *RateLimiter) Allow(key string) bool {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
+// Allow records an event for key and reports whether it is within the limit.
+// When it is not, retryAfter is the time until the key's window resets.
+func (l *Limiter) Allow(key string) (ok bool, retryAfter time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
-	now := time.Now()
-	b, exists := rl.buckets[key]
+	w := l.current(key)
+	if w.count >= l.limit {
+		return false, l.untilReset(w)
+	}
+	w.count++
+	return true, 0
+}
 
-	if !exists {
-		// New bucket
-		rl.buckets[key] = &bucket{
-			tokens:    rl.rate - 1,
-			lastReset: now,
+// Blocked reports whether key has used up its limit, without recording an
+// event. It pairs with Record to count only failures, such as failed logins.
+func (l *Limiter) Blocked(key string) (blocked bool, retryAfter time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	w := l.current(key)
+	if w.count >= l.limit {
+		return true, l.untilReset(w)
+	}
+	return false, 0
+}
+
+// Record records an event for key.
+func (l *Limiter) Record(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.current(key).count++
+}
+
+// current returns key's window, starting a new one if the last has ended.
+// The caller must hold l.mu.
+func (l *Limiter) current(key string) *fixedWindow {
+	now := l.now()
+	l.sweep(now)
+	w, ok := l.windows[key]
+	if !ok || now.Sub(w.start) >= l.window {
+		w = &fixedWindow{start: now}
+		l.windows[key] = w
+	}
+	return w
+}
+
+func (l *Limiter) untilReset(w *fixedWindow) time.Duration {
+	return w.start.Add(l.window).Sub(l.now())
+}
+
+// sweep drops ended windows at most once per window, bounding memory to the
+// keys seen in roughly the last two windows. The caller must hold l.mu.
+func (l *Limiter) sweep(now time.Time) {
+	if now.Before(l.nextSweep) {
+		return
+	}
+	for key, w := range l.windows {
+		if now.Sub(w.start) >= l.window {
+			delete(l.windows, key)
 		}
-		return true
 	}
-
-	// Check if window has passed
-	if now.Sub(b.lastReset) >= rl.window {
-		b.tokens = rl.rate - 1
-		b.lastReset = now
-		return true
-	}
-
-	// Check if tokens available
-	if b.tokens > 0 {
-		b.tokens--
-		return true
-	}
-
-	return false
+	l.nextSweep = now.Add(l.window)
 }
 
-// cleanup removes stale buckets periodically.
-func (rl *RateLimiter) cleanup() {
-	for range rl.cleanupT.C {
-		rl.mu.Lock()
-		now := time.Now()
-		for key, b := range rl.buckets {
-			if now.Sub(b.lastReset) > 2*rl.window {
-				delete(rl.buckets, key)
-			}
-		}
-		rl.mu.Unlock()
-	}
-}
-
-// Stop stops the rate limiter's cleanup goroutine.
-func (rl *RateLimiter) Stop() {
-	rl.cleanupT.Stop()
-}
-
-// RateLimit returns a middleware that limits requests by IP address.
-func RateLimit(limiter *RateLimiter) func(http.Handler) http.Handler {
+// RateLimitByIP rejects requests from clients over the limiter's limit. The
+// client IP comes from chi's ClientIPFrom* middleware, which must run first.
+func RateLimitByIP(l *Limiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Use X-Forwarded-For or RemoteAddr as the key
-			key := r.RemoteAddr
-			if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-				key = xff
-			}
-			if xri := r.Header.Get("X-Real-IP"); xri != "" {
-				key = xri
-			}
-
-			if !limiter.Allow(key) {
-				w.Header().Set("Retry-After", "60")
+			if ok, retryAfter := l.Allow(ClientKey(r)); !ok {
+				SetRetryAfter(w, retryAfter)
 				http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 				return
 			}
-
 			next.ServeHTTP(w, r)
 		})
 	}
 }
 
-// UserinfoRateLimiter creates a rate limiter configured for the /userinfo endpoint.
-// Allows 100 requests per 15 minutes per IP (matching Node.js implementation).
-func UserinfoRateLimiter() *RateLimiter {
-	return NewRateLimiter(100, 15*time.Minute)
+// SetRetryAfter sets the Retry-After header in whole seconds, rounding up.
+func SetRetryAfter(w http.ResponseWriter, d time.Duration) {
+	w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(d.Seconds()))))
+}
+
+// ClientKey returns the rate-limiting key for the request's client: its IP
+// address as set by chi's ClientIPFrom* middleware. IPv6 clients are grouped
+// by /64 prefix, since one host usually controls a whole /64 and could
+// otherwise rotate addresses to evade limits. Requests whose client IP is
+// unknown share one key.
+func ClientKey(r *http.Request) string {
+	// Unmap so IPv4 clients of a dual-stack listener (::ffff:a.b.c.d) are
+	// treated as IPv4.
+	addr := chimw.GetClientIPAddr(r.Context()).Unmap()
+	switch {
+	case !addr.IsValid():
+		return "unknown"
+	case addr.Is6():
+		prefix, _ := addr.Prefix(64)
+		return prefix.String()
+	default:
+		return addr.String()
+	}
 }

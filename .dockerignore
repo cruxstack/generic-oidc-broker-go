@@ -1,0 +1,10 @@
+# Keep secrets, local state and build output out of the build context.
+.git
+.env
+.env.*
+!.env.example
+*.pem
+testdata/
+bin/
+tmp/
+dist/

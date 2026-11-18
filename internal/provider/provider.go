@@ -1,162 +1,147 @@
-// Package provider defines the interface and registry for OAuth 2.0 identity providers.
+// Package provider signs users in with upstream OAuth 2.0 identity
+// providers (Twitter/X, GitHub and Google), whose sign-in the broker exposes
+// as OpenID Connect.
 package provider
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
-	"sort"
-	"sync"
+	"net/http"
+	"slices"
+
+	"golang.org/x/oauth2"
+
+	"github.com/cruxstack/generic-oidc-broker/internal/config"
+	"github.com/cruxstack/generic-oidc-broker/internal/token"
 )
 
-// UserData holds normalized user information from any OAuth provider.
-type UserData struct {
-	ID              string `json:"id"`                          // Unique ID from provider
-	Provider        string `json:"provider"`                    // Provider name (e.g., "twitter", "github")
-	Name            string `json:"name,omitempty"`              // Display name
-	Username        string `json:"username,omitempty"`          // Handle/login
-	Email           string `json:"email,omitempty"`             // Email (if available)
-	EmailVerified   bool   `json:"email_verified,omitempty"`    // Whether email is verified
-	ProfileImageURL string `json:"profile_image_url,omitempty"` // Avatar URL
+// user is a profile as returned by an upstream provider.
+type user struct {
+	ID            string
+	Name          string
+	Username      string
+	Email         string
+	EmailVerified bool
+	Picture       string
 }
 
-// Subject returns the unique subject identifier for OIDC tokens.
-// If prefixSubject is true, returns "provider:id" (e.g., "twitter:12345").
-// If prefixSubject is false, returns just "id" (e.g., "12345") for backward compatibility.
-func (u *UserData) Subject(prefixSubject bool) string {
-	if prefixSubject {
-		return u.Provider + ":" + u.ID
-	}
-	return u.ID
+// fetchUserFunc reads the signed-in user's profile. client adds the user's
+// access token to every request.
+type fetchUserFunc func(ctx context.Context, client *http.Client, userURL string) (*user, error)
+
+// kind describes a provider type: its default endpoints and scopes, and how
+// to read its user profile.
+type kind struct {
+	endpoint  oauth2.Endpoint
+	userURL   string
+	scopes    []string
+	pkce      bool
+	fetchUser fetchUserFunc
 }
 
-// TokenResponse holds the tokens returned from an OAuth provider.
-type TokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	TokenType    string `json:"token_type"`
-	ExpiresIn    int    `json:"expires_in,omitempty"`
-	RefreshToken string `json:"refresh_token,omitempty"`
-	Scope        string `json:"scope,omitempty"`
-	IDToken      string `json:"id_token,omitempty"` // For OIDC providers like Google
+var kinds = map[string]kind{
+	"twitter": twitterKind,
+	"github":  githubKind,
+	"google":  googleKind,
 }
 
-// Config holds the configuration for an OAuth provider.
-type Config struct {
-	Name          string   // Unique provider identifier, used in URLs and for registration (e.g., "google-app1")
-	Type          string   // Provider type for factory lookup (e.g., "twitter", "github", "google")
-	ClientID      string   // OAuth client ID
-	ClientSecret  string   // OAuth client secret
-	CallbackURL   string   // OAuth callback URL
-	AuthURL       string   // Authorization endpoint (optional, uses default if empty)
-	TokenURL      string   // Token endpoint (optional, uses default if empty)
-	UserURL       string   // User info endpoint (optional, uses default if empty)
-	Scopes        []string // OAuth scopes (optional, uses default if empty)
-	PrefixSubject bool     // If true, subject is "provider:id"; if false, just "id"
+// Provider signs users in with one configured upstream OAuth 2.0 app.
+type Provider struct {
+	name          string
+	prefixSubject bool
+	oauth         oauth2.Config
+	pkce          bool
+	userURL       string
+	fetchUser     fetchUserFunc
+	httpClient    *http.Client
 }
 
-// Provider defines the interface for an OAuth 2.0 identity provider.
-type Provider interface {
-	// Name returns the provider identifier (e.g., "twitter", "github").
-	Name() string
-
-	// AuthURL returns the full authorization URL with all required parameters.
-	// state: CSRF protection token
-	// codeChallenge: PKCE code challenge (S256)
-	AuthURL(state, codeChallenge string) string
-
-	// ExchangeCode exchanges an authorization code for tokens.
-	ExchangeCode(ctx context.Context, code, codeVerifier string) (*TokenResponse, error)
-
-	// GetUser fetches user information using the access token.
-	GetUser(ctx context.Context, accessToken string) (*UserData, error)
-
-	// Scopes returns the OAuth scopes this provider requests.
-	Scopes() []string
-
-	// SupportsPKCE returns whether the provider supports PKCE.
-	SupportsPKCE() bool
-
-	// PrefixSubject returns whether the subject should be prefixed with provider name.
-	// If true, subject is "provider:id" (e.g., "twitter:12345").
-	// If false, subject is just "id" (e.g., "12345").
-	PrefixSubject() bool
-}
-
-// Factory is a function that creates a Provider from a Config.
-type Factory func(cfg Config) (Provider, error)
-
-// Registry manages registered OAuth providers.
-type Registry struct {
-	mu        sync.RWMutex
-	providers map[string]Provider
-	factories map[string]Factory
-}
-
-// NewRegistry creates a new provider registry.
-func NewRegistry() *Registry {
-	return &Registry{
-		providers: make(map[string]Provider),
-		factories: make(map[string]Factory),
-	}
-}
-
-// RegisterFactory registers a provider factory for a given provider type.
-// This allows creating providers from configuration.
-func (r *Registry) RegisterFactory(name string, factory Factory) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.factories[name] = factory
-}
-
-// Register registers a provider instance.
-func (r *Registry) Register(p Provider) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.providers[p.Name()] = p
-}
-
-// Get returns a provider by name.
-func (r *Registry) Get(name string) Provider {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.providers[name]
-}
-
-// List returns all registered provider names in sorted order for deterministic behavior.
-func (r *Registry) List() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	names := make([]string, 0, len(r.providers))
-	for name := range r.providers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
-
-// CreateFromConfig creates and registers a provider from configuration.
-// The Type field is used to look up the factory, while Name is used as the provider identifier.
-func (r *Registry) CreateFromConfig(cfg Config) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Use Type for factory lookup (defaults to Name if Type is empty)
-	factoryType := cfg.Type
-	if factoryType == "" {
-		factoryType = cfg.Name
-	}
-
-	factory, ok := r.factories[factoryType]
+// New creates a provider from its configuration. httpClient is used for all
+// requests to the provider.
+func New(cfg config.Provider, httpClient *http.Client) (*Provider, error) {
+	k, ok := kinds[cfg.Type]
 	if !ok {
-		return fmt.Errorf("unknown provider type: %s", factoryType)
+		return nil, fmt.Errorf("provider %q: unknown type %q (supported: twitter, github, google)", cfg.Name, cfg.Type)
 	}
 
-	provider, err := factory(cfg)
+	endpoint := k.endpoint
+	endpoint.AuthURL = cmp.Or(cfg.AuthURL, endpoint.AuthURL)
+	endpoint.TokenURL = cmp.Or(cfg.TokenURL, endpoint.TokenURL)
+	scopes := k.scopes
+	if len(cfg.Scopes) > 0 {
+		scopes = cfg.Scopes
+	}
+
+	return &Provider{
+		name:          cfg.Name,
+		prefixSubject: cfg.SubjectPrefixed(),
+		oauth: oauth2.Config{
+			ClientID:     cfg.ClientID,
+			ClientSecret: cfg.ClientSecret,
+			Endpoint:     endpoint,
+			RedirectURL:  cfg.CallbackURL,
+			Scopes:       slices.Clone(scopes),
+		},
+		pkce:       k.pkce,
+		userURL:    cmp.Or(cfg.UserURL, k.userURL),
+		fetchUser:  k.fetchUser,
+		httpClient: httpClient,
+	}, nil
+}
+
+// Name returns the provider's configured name.
+func (p *Provider) Name() string {
+	return p.name
+}
+
+// AuthCodeURL returns the provider URL that starts sign-in. verifier is the
+// PKCE code verifier; it is ignored by providers without PKCE support.
+func (p *Provider) AuthCodeURL(state, verifier string) string {
+	if !p.pkce {
+		return p.oauth.AuthCodeURL(state)
+	}
+	return p.oauth.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier))
+}
+
+// Authenticate redeems the authorization code from the provider's callback
+// and returns the signed-in user's identity.
+func (p *Provider) Authenticate(ctx context.Context, code, verifier string) (token.Identity, error) {
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
+
+	var opts []oauth2.AuthCodeOption
+	if p.pkce {
+		opts = append(opts, oauth2.VerifierOption(verifier))
+	}
+	tok, err := p.oauth.Exchange(ctx, code, opts...)
 	if err != nil {
-		return fmt.Errorf("creating provider %s: %w", cfg.Name, err)
+		return token.Identity{}, fmt.Errorf("exchanging authorization code: %w", err)
 	}
 
-	// Register under the provider's Name (not Type)
-	r.providers[cfg.Name] = provider
-	return nil
+	u, err := p.fetchUser(ctx, p.oauth.Client(ctx, tok), p.userURL)
+	if err != nil {
+		return token.Identity{}, fmt.Errorf("fetching user profile: %w", err)
+	}
+	if u.ID == "" {
+		return token.Identity{}, errors.New("provider returned a user profile without an ID")
+	}
+
+	return token.Identity{
+		Subject:           p.subject(u.ID),
+		Name:              u.Name,
+		PreferredUsername: u.Username,
+		Email:             u.Email,
+		EmailVerified:     u.EmailVerified,
+		Picture:           u.Picture,
+	}, nil
+}
+
+// subject returns the sub claim for a provider user ID: "name:id", or just
+// the ID when prefixing is disabled.
+func (p *Provider) subject(userID string) string {
+	if p.prefixSubject {
+		return p.name + ":" + userID
+	}
+	return userID
 }

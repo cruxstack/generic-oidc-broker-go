@@ -1,10 +1,10 @@
 package e2e
 
 import (
-	"encoding/json"
+	"crypto/sha256"
+	"encoding/base64"
 	"net/http"
 	"net/url"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,258 +13,221 @@ import (
 	"github.com/cruxstack/generic-oidc-broker/e2e/testutil"
 )
 
-// TestFullOIDCFlow tests the complete OIDC authorization code flow.
-func TestFullOIDCFlow(t *testing.T) {
-	ts := getTestServer(t)
+func TestCodeFlow(t *testing.T) {
+	s := testutil.NewServer(t)
 
-	// Step 1: Start authorization flow
-	authorizeParams := &testutil.AuthorizeParams{
-		ClientID:     "test-client",
-		RedirectURI:  ts.URL + "/callback",
-		ResponseType: "code",
-		State:        "test-state-xyz",
-		Nonce:        "test-nonce-abc",
-		Scope:        "openid profile",
+	tests := []struct {
+		provider string
+		user     string
+		want     map[string]any
+	}{
+		{"twitter", "1001", map[string]any{
+			"sub": "twitter:1001", "name": "Alice Demo", "preferred_username": "alice_demo",
+			"picture": "https://example.com/avatars/alice.png",
+		}},
+		{"github", "1002", map[string]any{
+			"sub": "github:1002", "name": "Bob Tester", "preferred_username": "bob_test",
+			"picture": "https://example.com/avatars/bob.png", "email": "bob@example.com", "email_verified": true,
+		}},
+		{"google", "1001", map[string]any{
+			"sub": "google:1001", "name": "Alice Demo",
+			"picture": "https://example.com/avatars/alice.png", "email": "alice@example.com", "email_verified": true,
+		}},
+		{"github", "1003", map[string]any{
+			"sub": "github:1003", "name": "Charlie Dev", "preferred_username": "charlie_dev",
+			"picture": "https://example.com/avatars/charlie.png", "email": "charlie@example.com", "email_verified": false,
+		}},
+		{"twitter-raw", "1001", map[string]any{
+			"sub": "1001", "name": "Alice Demo", "preferred_username": "alice_demo",
+			"picture": "https://example.com/avatars/alice.png",
+		}},
 	}
+	for _, tt := range tests {
+		t.Run(tt.provider+"/"+tt.user, func(t *testing.T) {
+			redirect := testutil.NewBrowser(t).Login(s, tt.provider, s.AuthParams(), tt.user)
 
-	client := testutil.NewTestClient(ts.URL)
-	resp, err := client.Client.Get(authorizeParams.BuildAuthorizeURL(ts.URL))
-	require.NoError(t, err)
-	resp.Body.Close()
+			params := redirect.Query()
+			assert.Empty(t, redirect.Fragment)
+			assert.Equal(t, "client-state", params.Get("state"))
+			assert.Equal(t, s.Issuer(tt.provider), params.Get("iss"))
+			require.NotEmpty(t, params.Get("code"))
 
-	// Should redirect to Twitter auth
-	require.Equal(t, http.StatusFound, resp.StatusCode)
-	twitterRedirect, err := testutil.GetRedirectLocation(resp)
-	require.NoError(t, err)
-	assert.Contains(t, twitterRedirect.Path, "/auth/twitter")
+			idToken, accessToken := s.RedeemCode(t, tt.provider, params.Get("code"))
+			claims := s.VerifyIDToken(t, tt.provider, idToken)
+			assert.Equal(t, "client-nonce", claims["nonce"])
+			for name, value := range tt.want {
+				assert.Equal(t, value, claims[name], "ID token claim %s", name)
+			}
 
-	// Step 2: Follow redirect to Twitter (mock)
-	resp, err = client.Client.Get(ts.URL + twitterRedirect.RequestURI())
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	// Should redirect to mock Twitter authorize
-	require.Equal(t, http.StatusFound, resp.StatusCode)
-
-	// Step 3: Mock Twitter redirects back with code
-	// The mock Twitter server handles this automatically
-	mockTwitterAuthURL, err := testutil.GetRedirectLocation(resp)
-	require.NoError(t, err)
-
-	// Follow the Twitter auth URL (mock server will redirect back)
-	resp, err = client.Client.Get(mockTwitterAuthURL.String())
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	// Should redirect to callback with Twitter code
-	require.Equal(t, http.StatusFound, resp.StatusCode)
-	callbackURL, err := testutil.GetRedirectLocation(resp)
-	require.NoError(t, err)
-
-	// Step 4: Handle Twitter callback
-	resp, err = client.Client.Get(ts.URL + callbackURL.RequestURI())
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	// Should redirect to client callback with OIDC code
-	require.Equal(t, http.StatusFound, resp.StatusCode)
-	finalRedirect, err := testutil.GetRedirectLocation(resp)
-	require.NoError(t, err)
-
-	// Verify state is preserved
-	assert.Equal(t, "test-state-xyz", finalRedirect.Query().Get("state"))
-
-	// Get the authorization code
-	code := finalRedirect.Query().Get("code")
-	require.NotEmpty(t, code, "authorization code should be present")
-
-	// Step 5: Exchange code for tokens
-	tokenParams := &testutil.TokenParams{
-		GrantType:    "authorization_code",
-		Code:         code,
-		RedirectURI:  ts.URL + "/callback",
-		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+			resp := userinfo(t, s, tt.provider, accessToken)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			assert.Equal(t, tt.want, resp.claims)
+		})
 	}
-
-	resp, err = client.PostForm("/providers/twitter/token", tokenParams.ToFormValues())
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	var tokenResp map[string]interface{}
-	err = json.NewDecoder(resp.Body).Decode(&tokenResp)
-	require.NoError(t, err)
-
-	accessToken := tokenResp["access_token"].(string)
-	idToken := tokenResp["id_token"].(string)
-
-	require.NotEmpty(t, accessToken)
-	require.NotEmpty(t, idToken)
-
-	// Step 6: Verify ID token claims
-	claims := decodeJWTClaims(t, idToken)
-	assert.Equal(t, ts.URL+"/providers/twitter", claims["iss"], "issuer should match provider-scoped issuer")
-	assert.Equal(t, "test-nonce-abc", claims["nonce"], "nonce should be preserved")
-
-	// Verify audience contains client_id
-	aud := claims["aud"]
-	switch v := aud.(type) {
-	case string:
-		assert.Equal(t, "test-client", v)
-	case []interface{}:
-		assert.Contains(t, v, "test-client")
-	}
-
-	// Step 7: Call userinfo endpoint
-	resp, err = client.GetWithAuth("/providers/twitter/userinfo", accessToken)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	var userinfo map[string]interface{}
-	err = json.NewDecoder(resp.Body).Decode(&userinfo)
-	require.NoError(t, err)
-
-	// Verify sub matches ID token
-	assert.Equal(t, claims["sub"], userinfo["sub"], "subject should match between ID token and userinfo")
 }
 
-// TestImplicitFlow tests the implicit flow (response_type=id_token).
 func TestImplicitFlow(t *testing.T) {
-	ts := getTestServer(t)
+	s := testutil.NewServer(t)
+	params := s.AuthParams()
+	params.Set("response_type", "id_token")
 
-	// Start with id_token response type
-	authorizeParams := &testutil.AuthorizeParams{
-		ClientID:     "test-client",
-		RedirectURI:  ts.URL + "/callback",
-		ResponseType: "id_token",
-		State:        "implicit-state",
-		Nonce:        "implicit-nonce",
-		Scope:        "openid",
-	}
+	redirect := testutil.NewBrowser(t).Login(s, "google", params, "1001")
 
-	// Follow the full flow
-	client := testutil.NewTestClient(ts.URL)
+	assert.Empty(t, redirect.RawQuery, "an ID token must never be sent in the query")
+	got := testutil.ResponseParams(t, redirect)
+	assert.Equal(t, "client-state", got.Get("state"))
+	assert.Empty(t, got.Get("code"))
+	assert.Empty(t, got.Get("access_token"), "access tokens are not returned from the authorization endpoint")
 
-	// Start authorization
-	resp, err := client.Client.Get(authorizeParams.BuildAuthorizeURL(ts.URL))
-	require.NoError(t, err)
-	resp.Body.Close()
-	require.Equal(t, http.StatusFound, resp.StatusCode)
+	claims := s.VerifyIDToken(t, "google", got.Get("id_token"))
+	assert.Equal(t, "client-nonce", claims["nonce"])
+	assert.Equal(t, "google:1001", claims["sub"])
+}
 
-	// Follow through Twitter mock
-	loc, _ := testutil.GetRedirectLocation(resp)
-	resp, err = client.Client.Get(ts.URL + loc.RequestURI())
-	require.NoError(t, err)
-	resp.Body.Close()
-	require.Equal(t, http.StatusFound, resp.StatusCode)
+func TestHybridFlow(t *testing.T) {
+	s := testutil.NewServer(t)
+	params := s.AuthParams()
+	params.Set("response_type", "code id_token")
 
-	// Twitter auth redirect
-	loc, _ = testutil.GetRedirectLocation(resp)
-	resp, err = client.Client.Get(loc.String())
-	require.NoError(t, err)
-	resp.Body.Close()
-	require.Equal(t, http.StatusFound, resp.StatusCode)
+	redirect := testutil.NewBrowser(t).Login(s, "github", params, "1001")
 
-	// Twitter callback
-	loc, _ = testutil.GetRedirectLocation(resp)
-	resp, err = client.Client.Get(ts.URL + loc.RequestURI())
-	require.NoError(t, err)
-	resp.Body.Close()
-	require.Equal(t, http.StatusFound, resp.StatusCode)
+	got := testutil.ResponseParams(t, redirect)
+	require.NotEmpty(t, got.Get("code"))
+	assert.Empty(t, got.Get("access_token"), "access tokens are not returned from the authorization endpoint")
 
-	// Final redirect - for implicit flow, token is in fragment
-	finalLoc, _ := testutil.GetRedirectLocation(resp)
+	claims := s.VerifyIDToken(t, "github", got.Get("id_token"))
+	sum := sha256.Sum256([]byte(got.Get("code")))
+	assert.Equal(t, base64.RawURLEncoding.EncodeToString(sum[:16]), claims["c_hash"])
 
-	// For implicit flow, the id_token should be in the fragment
-	// Parse the fragment as query params
-	fragment := finalLoc.Fragment
-	if fragment != "" {
-		fragmentParams, err := url.ParseQuery(fragment)
-		require.NoError(t, err)
+	idToken, _ := s.RedeemCode(t, "github", got.Get("code"))
+	assert.Equal(t, "github:1001", s.VerifyIDToken(t, "github", idToken)["sub"])
+}
 
-		idToken := fragmentParams.Get("id_token")
-		assert.NotEmpty(t, idToken, "id_token should be in fragment for implicit flow")
-		assert.Equal(t, "implicit-state", fragmentParams.Get("state"))
+func TestStateWithSpecialCharactersRoundTrips(t *testing.T) {
+	s := testutil.NewServer(t)
+	const state = "a b&c=d/e?f#g%h+i"
 
-		// Verify token
-		claims := decodeJWTClaims(t, idToken)
-		assert.Equal(t, "implicit-nonce", claims["nonce"])
-	} else {
-		// Some implementations return in query string
-		idToken := finalLoc.Query().Get("id_token")
-		if idToken != "" {
-			claims := decodeJWTClaims(t, idToken)
-			assert.Equal(t, "implicit-nonce", claims["nonce"])
-		}
+	for _, responseType := range []string{"code", "id_token"} {
+		params := s.AuthParams()
+		params.Set("state", state)
+		params.Set("response_type", responseType)
+
+		redirect := testutil.NewBrowser(t).Login(s, "twitter", params, "1001")
+		assert.Equal(t, state, testutil.ResponseParams(t, redirect).Get("state"), responseType)
 	}
 }
 
-// TestHybridFlow tests the hybrid flow (response_type=code id_token).
-func TestHybridFlow(t *testing.T) {
-	ts := getTestServer(t)
+func TestConcurrentSignInsInOneBrowser(t *testing.T) {
+	s := testutil.NewServer(t)
+	browser := testutil.NewBrowser(t)
 
-	authorizeParams := &testutil.AuthorizeParams{
-		ClientID:     "test-client",
-		RedirectURI:  ts.URL + "/callback",
-		ResponseType: "code id_token",
-		State:        "hybrid-state",
-		Nonce:        "hybrid-nonce",
-		Scope:        "openid",
+	first := s.AuthParams()
+	first.Set("state", "first")
+	second := s.AuthParams()
+	second.Set("state", "second")
+
+	firstAuthorize := browser.Authorize(s, "github", first)
+	secondAuthorize := browser.Authorize(s, "google", second)
+
+	for _, step := range []struct {
+		authorize *testutil.Response
+		state     string
+	}{{secondAuthorize, "second"}, {firstAuthorize, "first"}} {
+		callback := browser.SignIn(step.authorize, "1001")
+		require.Equal(t, http.StatusFound, callback.StatusCode, callback.Text)
+		query := callback.Location().Query()
+		assert.Equal(t, step.state, query.Get("state"))
+		assert.NotEmpty(t, query.Get("code"))
 	}
+}
 
-	client := testutil.NewTestClient(ts.URL)
+// upstreamState starts a sign-in and returns the state the broker sent to
+// the provider.
+func upstreamState(t *testing.T, s *testutil.Server, browser *testutil.Browser, provider string) string {
+	t.Helper()
+	resp := browser.Authorize(s, provider, s.AuthParams())
+	require.Equal(t, http.StatusFound, resp.StatusCode, resp.Text)
+	return resp.Location().Query().Get("state")
+}
 
-	// Start authorization
-	resp, err := client.Client.Get(authorizeParams.BuildAuthorizeURL(ts.URL))
-	require.NoError(t, err)
-	resp.Body.Close()
-	require.Equal(t, http.StatusFound, resp.StatusCode)
+func callbackURL(s *testutil.Server, provider string, params url.Values) string {
+	return s.URL + "/auth/" + provider + "/callback?" + params.Encode()
+}
 
-	// Follow through Twitter mock
-	loc, _ := testutil.GetRedirectLocation(resp)
-	resp, err = client.Client.Get(ts.URL + loc.RequestURI())
-	require.NoError(t, err)
-	resp.Body.Close()
+func TestCallback_ProviderErrorIsReturnedToClient(t *testing.T) {
+	s := testutil.NewServer(t)
 
-	loc, _ = testutil.GetRedirectLocation(resp)
-	resp, err = client.Client.Get(loc.String())
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	loc, _ = testutil.GetRedirectLocation(resp)
-	resp, err = client.Client.Get(ts.URL + loc.RequestURI())
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	finalLoc, _ := testutil.GetRedirectLocation(resp)
-
-	// For hybrid flow, both code and id_token should be present
-	// They might be in fragment or query depending on implementation
-	var code, idToken string
-
-	if finalLoc.Fragment != "" {
-		fragmentParams, _ := url.ParseQuery(finalLoc.Fragment)
-		code = fragmentParams.Get("code")
-		idToken = fragmentParams.Get("id_token")
+	tests := map[string]string{
+		"access_denied":  "access_denied",
+		"server_error":   "server_error",
+		"invalid_scope":  "server_error",
+		"something_else": "server_error",
 	}
+	for providerErr, wantErr := range tests {
+		t.Run(providerErr, func(t *testing.T) {
+			browser := testutil.NewBrowser(t)
+			state := upstreamState(t, s, browser, "github")
 
-	if code == "" {
-		code = finalLoc.Query().Get("code")
+			resp := browser.Get(callbackURL(s, "github", url.Values{"error": {providerErr}, "state": {state}}))
+			require.Equal(t, http.StatusFound, resp.StatusCode, resp.Text)
+			query := resp.Location().Query()
+			assert.Equal(t, s.URL+"/callback", resp.Location().Scheme+"://"+resp.Location().Host+resp.Location().Path)
+			assert.Equal(t, wantErr, query.Get("error"))
+			assert.Equal(t, "client-state", query.Get("state"))
+		})
 	}
-	if idToken == "" {
-		idToken = finalLoc.Query().Get("id_token")
-	}
+}
 
-	// At minimum, code should be present
-	assert.NotEmpty(t, code, "code should be present in hybrid flow")
+func TestCallback_FailedCodeExchangeIsReturnedToClient(t *testing.T) {
+	s := testutil.NewServer(t)
+	browser := testutil.NewBrowser(t)
+	state := upstreamState(t, s, browser, "twitter")
 
-	// If id_token is present, verify it
-	if idToken != "" {
-		parts := strings.Split(idToken, ".")
-		assert.Len(t, parts, 3, "id_token should be a valid JWT")
+	resp := browser.Get(callbackURL(s, "twitter", url.Values{"code": {"forged"}, "state": {state}}))
+	require.Equal(t, http.StatusFound, resp.StatusCode, resp.Text)
+	assert.Equal(t, "server_error", resp.Location().Query().Get("error"))
+}
+
+func TestCallback_RejectsUnknownState(t *testing.T) {
+	s := testutil.NewServer(t)
+	browser := testutil.NewBrowser(t)
+	upstreamState(t, s, browser, "github")
+
+	for _, state := range []string{"", "unknown"} {
+		resp := browser.Get(callbackURL(s, "github", url.Values{"code": {"x"}, "state": {state}}))
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assert.Empty(t, resp.Header.Get("Location"))
 	}
+}
+
+// A sign-in started for one provider can't be completed through another, so
+// an identity from one provider can never be issued under another's issuer.
+func TestCallback_RejectsSignInStartedWithAnotherProvider(t *testing.T) {
+	s := testutil.NewServer(t)
+	browser := testutil.NewBrowser(t)
+	state := upstreamState(t, s, browser, "twitter")
+
+	resp := browser.Get(callbackURL(s, "twitter-raw", url.Values{"code": {"x"}, "state": {state}}))
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Empty(t, resp.Header.Get("Location"))
+}
+
+func TestCallback_RejectsSignInFromAnotherBrowser(t *testing.T) {
+	s := testutil.NewServer(t)
+	state := upstreamState(t, s, testutil.NewBrowser(t), "github")
+
+	resp := testutil.NewBrowser(t).Get(callbackURL(s, "github", url.Values{"code": {"x"}, "state": {state}}))
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestCallback_CannotBeReplayed(t *testing.T) {
+	s := testutil.NewServer(t)
+	browser := testutil.NewBrowser(t)
+
+	authorize := browser.Authorize(s, "github", s.AuthParams())
+	callback := browser.SignIn(authorize, "1001")
+	require.Equal(t, http.StatusFound, callback.StatusCode)
+
+	replay := browser.Get(callback.Request.URL.String())
+	assert.Equal(t, http.StatusBadRequest, replay.StatusCode)
 }

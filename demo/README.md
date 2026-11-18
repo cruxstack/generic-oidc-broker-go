@@ -1,144 +1,58 @@
-# Offline Demo
+# Offline demo
 
-This demo runs the OIDC Broker with mock OAuth providers, allowing you to test the complete authentication flow without any external dependencies or internet access.
+Runs the broker with Twitter/X, GitHub and Google providers that are all backed
+by a local mock provider, so the whole sign-in flow works without accounts at
+those providers.
 
-## Quick Start
+## Start
+
+From the repository root:
 
 ```bash
-# From the repository root
 make demo
 ```
 
-This will:
-1. Build the OIDC broker and mock OAuth provider containers
-2. Auto-generate RSA signing keys at runtime (no keys committed to repo)
-3. Start all services with pre-configured settings
+Then open <http://localhost:3000/debug/login>, choose a provider, and pick a
+test account. The callback page shows the ID token's claims, the userinfo
+response, and the raw tokens.
 
-## Endpoints
+| Service       | URL                                                                     |
+| ------------- | ----------------------------------------------------------------------- |
+| Debug login   | <http://localhost:3000/debug/login>                                     |
+| Discovery     | <http://localhost:3000/providers/github/.well-known/openid-configuration> |
+| Mock provider | <http://localhost:9999>                                                 |
 
-| Service | URL | Description |
-|---------|-----|-------------|
-| OIDC Broker | http://localhost:3000 | Main OIDC broker service |
-| Debug Login | http://localhost:3000/debug/login | Start an OIDC authentication flow |
-| Discovery | http://localhost:3000/.well-known/openid-configuration | OIDC discovery document |
-| JWKS | http://localhost:3000/.well-known/jwks.json | JSON Web Key Set |
-| Mock OAuth | http://localhost:9999 | Mock OAuth provider (Twitter, GitHub, Google) |
+Every provider is its own issuer at `http://localhost:3000/providers/{name}`,
+with `twitter`, `github` and `google` configured.
 
-## Testing the Flow
+## Test accounts
 
-1. **Start the demo:**
-   ```bash
-   make demo
-   ```
+| Name        | Username     | Email               | Email verified |
+| ----------- | ------------ | ------------------- | -------------- |
+| Alice Demo  | alice_demo   | alice@example.com   | Yes            |
+| Bob Tester  | bob_test     | bob@example.com     | Yes            |
+| Charlie Dev | charlie_dev  | charlie@example.com | No             |
 
-2. **Open the debug login page:**
-   
-   Navigate to http://localhost:3000/debug/login
-
-3. **Select a provider:**
-   
-   Choose Twitter, GitHub, or Google from the available providers.
-
-4. **Select a test user:**
-   
-   The mock OAuth provider will show a login page where you can select from three test users:
-   - Alice Demo (@alice_demo)
-   - Bob Tester (@bob_test)
-   - Charlie Dev (@charlie_dev)
-
-5. **View the tokens:**
-   
-   After authentication, you'll be redirected to the debug callback page showing:
-   - ID Token (JWT)
-   - Access Token
-   - Decoded token claims
-
-## Available Commands
-
-```bash
-make demo          # Start the demo and show URLs
-make demo-up       # Start containers in background
-make demo-down     # Stop and remove containers
-make demo-logs     # Follow container logs
-make demo-restart  # Restart all containers
-```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Docker Compose Stack                        │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌──────────────────┐         ┌─────────────────────────────┐  │
-│  │   OIDC Broker    │ ──────► │    Mock OAuth Provider      │  │
-│  │   (port 3000)    │         │       (port 9999)           │  │
-│  │                  │         │                             │  │
-│  │  /authorize      │         │  /twitter/authorize         │  │
-│  │  /token          │         │  /twitter/token             │  │
-│  │  /userinfo       │         │  /twitter/user              │  │
-│  │  /debug/login    │         │  /github/...                │  │
-│  │  /debug/callback │         │  /google/...                │  │
-│  │  /.well-known/*  │         │  /login (user selection)    │  │
-│  └──────────────────┘         └─────────────────────────────┘  │
-│           │                                                     │
-│           ▼                                                     │
-│  ┌──────────────────┐                                          │
-│  │   Keys Volume    │ Auto-generated RSA keys at startup       │
-│  └──────────────────┘                                          │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+Twitter/X profiles have no email address, as with the real API.
 
 ## Configuration
 
-The demo is pre-configured with:
+`docker-compose.yml` configures:
 
-- **OIDC Client:** `demo-client` / `demo-secret`
-- **Providers:** Twitter, GitHub, Google (all pointing to mock server)
-- **Storage:** In-memory (no Redis required)
-- **Keys:** Auto-generated 2048-bit RSA at container startup
+- the OIDC client `demo-client` / `demo-secret`, allowed to redirect to
+  `http://localhost:3000/debug/callback`
+- a signing key generated on first start and kept in the `keys` volume
+- in-memory authorization codes, so no Redis is needed
 
-## Test Users
-
-| Name | Username | Email | Email Verified |
-|------|----------|-------|----------------|
-| Alice Demo | @alice_demo | alice@example.com | Yes |
-| Bob Tester | @bob_test | bob@example.com | Yes |
-| Charlie Dev | @charlie_dev | charlie@example.com | No |
-
-## Troubleshooting
-
-### Containers won't start
+## Commands
 
 ```bash
-# Check container status
-docker compose -f demo/docker-compose.yml ps
-
-# View logs
-make demo-logs
-
-# Rebuild from scratch
-make demo-down
-docker compose -f demo/docker-compose.yml build --no-cache
-make demo-up
+make demo          # build and start
+make demo-logs     # follow logs
+make demo-restart  # rebuild and restart
+make demo-down     # stop and delete the signing key volume
 ```
 
-### Port already in use
-
-If ports 3000 or 9999 are already in use, you can modify `demo/docker-compose.yml` to use different ports:
-
-```yaml
-services:
-  broker:
-    ports:
-      - "3001:3000"  # Use port 3001 instead
-```
-
-### Keys not generating
-
-The keys are generated by an init container. Check its logs:
-
-```bash
-docker compose -f demo/docker-compose.yml logs init
-```
+If port 3000 or 9999 is taken, change the published ports in
+`docker-compose.yml`. Changing the broker's port also means changing the URLs
+that contain `localhost:3000`.

@@ -1,0 +1,13 @@
+# Live reload for `make dev` (https://github.com/air-verse/air).
+root = "."
+tmp_dir = "tmp"
+
+[build]
+cmd = "go build -o ./tmp/broker ./cmd/broker"
+bin = "./tmp/broker"
+include_ext = ["go", "html"]
+exclude_dir = [".git", "bin", "demo", "e2e", "tmp"]
+exclude_regex = ["_test\\.go$"]
+
+[misc]
+clean_on_exit = true
