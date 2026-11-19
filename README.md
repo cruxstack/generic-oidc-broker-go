@@ -214,6 +214,10 @@ Each provider is a separate issuer at `{APP_OIDC_ISSUER}/providers/{name}`:
 - **Client authentication:** `client_secret_basic` and `client_secret_post`.
 - **Nonce:** required when the response includes an ID token from the
   authorization endpoint.
+- **Parameter limits:** `state` up to 1024 characters (Amazon Cognito sends
+  600-700) and `nonce` up to 512. Pending sign-ins share a 4 KB cookie, so a
+  browser keeps up to three at once, or fewer when their `state` values are
+  long; the oldest is dropped first.
 - **Authorization response issuer:** responses include `iss` (RFC 9207).
 
 ### Tokens

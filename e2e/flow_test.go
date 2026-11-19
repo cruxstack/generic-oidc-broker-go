@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -63,6 +64,36 @@ func TestCodeFlow(t *testing.T) {
 			require.Equal(t, http.StatusOK, resp.StatusCode)
 			assert.Equal(t, tt.want, resp.claims)
 		})
+	}
+}
+
+// Amazon Cognito sends a 600-700 character state when it federates to the
+// broker, and a user may start a second sign-in, for example in another tab,
+// before finishing the first.
+func TestCodeFlow_LongClientStates(t *testing.T) {
+	s := testutil.NewServer(t)
+	b := testutil.NewBrowser(t)
+
+	first, second := s.AuthParams(), s.AuthParams()
+	first.Set("state", strings.Repeat("a", 650))
+	second.Set("state", strings.Repeat("b", 650))
+	firstAuth := b.Authorize(s, "twitter", first)
+	secondAuth := b.Authorize(s, "twitter", second)
+
+	for _, tt := range []struct {
+		authorize *testutil.Response
+		state     string
+	}{
+		{secondAuth, second.Get("state")},
+		{firstAuth, first.Get("state")},
+	} {
+		callback := b.SignIn(tt.authorize, "1001")
+		require.Equal(t, http.StatusFound, callback.StatusCode, callback.Text)
+		params := callback.Location().Query()
+		assert.Equal(t, tt.state, params.Get("state"))
+
+		idToken, _ := s.RedeemCode(t, "twitter", params.Get("code"))
+		assert.Equal(t, "twitter:1001", s.VerifyIDToken(t, "twitter", idToken)["sub"])
 	}
 }
 
