@@ -117,3 +117,17 @@ func TestAuthorize_ErrorsAreRedirectedToClient(t *testing.T) {
 		})
 	}
 }
+
+func TestAuthorize_StateLength(t *testing.T) {
+	s := testutil.NewServer(t)
+
+	for length, wantError := range map[int]string{1024: "", 1025: "invalid_request"} {
+		params := s.AuthParams()
+		params.Set("state", strings.Repeat("s", length))
+
+		resp := testutil.NewBrowser(t).Authorize(s, "github", params)
+		require.Equal(t, http.StatusFound, resp.StatusCode, resp.Text)
+		got := testutil.ResponseParams(t, resp.Location())
+		assert.Equal(t, wantError, got.Get("error"), "state of %d characters", length)
+	}
+}

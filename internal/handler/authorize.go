@@ -3,6 +3,7 @@ package handler
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/url"
 	"slices"
@@ -12,8 +13,15 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// maxParamLength bounds state and nonce, which are stored in the flow cookie.
-const maxParamLength = 512
+// maxStateLength and maxNonceLength bound the client's state and nonce, which
+// are stored in the flow cookie. state is generous because some clients pack
+// their own context into it: Amazon Cognito, for example, sends 600-700
+// characters. Together they still fit in the cookie alongside the rest of the
+// request.
+const (
+	maxStateLength = 1024
+	maxNonceLength = 512
+)
 
 // supportedScopes are the scopes the broker understands. Others are ignored,
 // as RFC 6749 §3.3 allows.
@@ -106,7 +114,10 @@ func (h *Handler) Authorize(w http.ResponseWriter, r *http.Request) {
 	state, verifier := rand.Text(), oauth2.GenerateVerifier()
 	req.ProviderVerifier = verifier
 	req.CreatedAt = h.flows.now()
-	if err := h.flows.add(w, r, state, req); err != nil {
+	if err := h.flows.add(w, r, state, req); errors.Is(err, errFlowTooLarge) {
+		reply.sendError(w, r, "invalid_request", "the authorization request is too large")
+		return
+	} else if err != nil {
 		h.logger.Error("saving sign-in cookie", "error", err)
 		reply.sendError(w, r, "server_error", "could not start sign-in")
 		return
@@ -126,8 +137,11 @@ func readAuthorizationParams(query url.Values, req *authorizationRequest) *oauth
 	req.Scope = scope
 
 	req.State, req.Nonce = query.Get("state"), query.Get("nonce")
-	if len(req.State) > maxParamLength || len(req.Nonce) > maxParamLength {
-		return &oauthError{"invalid_request", "state and nonce must be at most 512 characters"}
+	if len(req.State) > maxStateLength {
+		return &oauthError{"invalid_request", "state must be at most 1024 characters"}
+	}
+	if len(req.Nonce) > maxNonceLength {
+		return &oauthError{"invalid_request", "nonce must be at most 512 characters"}
 	}
 	// OIDC Core §3.2.2.1 and §3.3.2.11.
 	if req.ResponseType.IDToken && req.Nonce == "" {

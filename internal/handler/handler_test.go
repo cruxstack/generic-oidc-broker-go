@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"crypto/rand"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -165,6 +166,80 @@ func TestFlowCookie_KeepsTheNewestFlows(t *testing.T) {
 	flows := f.load(req)
 	assert.Len(t, flows, maxPendingFlows)
 	assert.NotContains(t, flows, "a", "the oldest flow is dropped")
+}
+
+// largeRequest returns an authorization request with a state of n characters
+// that JSON does not escape.
+func largeRequest(createdAt time.Time, n int) authorizationRequest {
+	return authorizationRequest{
+		Provider:         "twitter",
+		ClientID:         "92db6e93-c4b0-46a3-b798-8207866e9f10",
+		RedirectURI:      "https://example.auth.us-east-1.amazoncognito.com/oauth2/idpresponse",
+		ResponseType:     responseType{Code: true},
+		Scope:            "openid email",
+		State:            strings.Repeat("s", n),
+		ProviderVerifier: oauth2.GenerateVerifier(),
+		CreatedAt:        createdAt,
+	}
+}
+
+func TestFlowCookie_FitsTheLargestAllowedRequest(t *testing.T) {
+	f, now := newTestFlowCookie(t)
+	req := largeRequest(*now, maxStateLength)
+	req.Nonce = strings.Repeat("n", maxNonceLength)
+	req.RedirectURI += "?" + strings.Repeat("q", 200)
+	req.CodeChallenge = oauth2.S256ChallengeFromVerifier("v")
+
+	rec := httptest.NewRecorder()
+	require.NoError(t, f.add(rec, httptest.NewRequest(http.MethodGet, "/", nil), rand.Text(), req))
+	cookie := rec.Result().Cookies()[0]
+	assert.LessOrEqual(t, len(cookie.Name)+1+len(cookie.Value), 4096)
+}
+
+// Clients such as Amazon Cognito send long state values. When several of
+// their sign-ins don't fit in the cookie together, the oldest are dropped.
+func TestFlowCookie_DropsOlderFlowsToFit(t *testing.T) {
+	f, now := newTestFlowCookie(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	var states []string
+	for range maxPendingFlows {
+		*now = now.Add(time.Second)
+		state := rand.Text()
+		states = append(states, state)
+		require.NoError(t, f.add(rec, req, state, largeRequest(*now, 900)))
+		cookie := rec.Result().Cookies()[0]
+		assert.LessOrEqual(t, len(cookie.Name)+1+len(cookie.Value), 4096)
+		req = requestWithCookies(rec)
+		rec = httptest.NewRecorder()
+	}
+
+	flows := f.load(req)
+	assert.Less(t, len(flows), maxPendingFlows, "the requests are too large to all fit")
+	assert.NotContains(t, flows, states[0], "the oldest flow is dropped")
+	require.Contains(t, flows, states[len(states)-1], "the newest flow is kept")
+	assert.Len(t, flows[states[len(states)-1]].State, 900)
+}
+
+func TestFlowCookie_RejectsRequestsThatCannotFit(t *testing.T) {
+	f, now := newTestFlowCookie(t)
+	rec := httptest.NewRecorder()
+	require.NoError(t, f.add(rec, httptest.NewRequest(http.MethodGet, "/", nil), "kept", authorizationRequest{CreatedAt: *now}))
+
+	// JSON escapes "&" as &, so this state alone overflows the cookie.
+	huge := largeRequest(*now, 0)
+	huge.State = strings.Repeat("&", maxStateLength)
+	tooLargeRec := httptest.NewRecorder()
+	err := f.add(tooLargeRec, requestWithCookies(rec), "huge", huge)
+	require.ErrorIs(t, err, errFlowTooLarge)
+	assert.Empty(t, tooLargeRec.Result().Cookies(), "the existing cookie is left as is")
+}
+
+func TestFlowCookie_IgnoresOversizedCookies(t *testing.T) {
+	f, _ := newTestFlowCookie(t)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: flowCookieName, Value: strings.Repeat("a", maxFlowCookieValueLength+1)})
+	assert.Empty(t, f.load(req))
 }
 
 func TestFlowCookie_IgnoresUntrustedCookies(t *testing.T) {
